@@ -512,7 +512,8 @@ actor UploadEngine {
                 parentId: nil
             )
 
-            await MainActor.run { task.markCompleted(fileId: completeResponse.fileId, shareURL: completeResponse.shareURL) }
+            let shareURL = completeResponse.shareURL ?? "https://www.krevo.io/file/\(completeResponse.fileId)"
+            await MainActor.run { task.markCompleted(fileId: completeResponse.fileId, shareURL: shareURL) }
 
         } catch is CancellationError {
             KrevoConstants.uploadLogger.info("Upload cancelled: \(task.fileName)")
