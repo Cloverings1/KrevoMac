@@ -2,6 +2,12 @@ import SwiftUI
 import Network
 import os
 
+nonisolated enum GlobalBanner: Equatable {
+    case networkOffline
+    case authRequired
+    case quotaIssue(String)
+}
+
 @Observable
 final class AppState {
 
@@ -48,6 +54,9 @@ final class AppState {
     var completedFileName = ""
     private var bannerDismissTask: Task<Void, Never>?
 
+    // Global messaging
+    var globalBanner: GlobalBanner?
+
     // MARK: - Services
 
     let apiClient = KrevoAPIClient()
@@ -72,7 +81,16 @@ final class AppState {
         pathMonitor = monitor
         monitor.pathUpdateHandler = { [weak self] path in
             Task { @MainActor [weak self] in
-                self?.isNetworkAvailable = path.status == .satisfied
+                let isAvailable = path.status == .satisfied
+                self?.isNetworkAvailable = isAvailable
+
+                if isAvailable {
+                    if case .networkOffline = self?.globalBanner {
+                        self?.globalBanner = nil
+                    }
+                } else {
+                    self?.globalBanner = .networkOffline
+                }
             }
         }
         monitor.start(queue: DispatchQueue(label: "io.krevo.mac.network"))
@@ -104,11 +122,15 @@ final class AppState {
             let info = try await apiClient.validateToken()
             applyStorageInfo(info)
             isAuthenticated = true
+            if case .authRequired = globalBanner {
+                globalBanner = nil
+            }
         } catch {
             // Token is invalid or expired — clear it
             isAuthenticated = false
             await apiClient.clearToken()
             KeychainService.deleteToken()
+            globalBanner = .authRequired
         }
     }
 
@@ -127,6 +149,8 @@ final class AppState {
     }
 
     func signOut() async {
+        await abortAllUploads()
+
         // Attempt to revoke on the server (best-effort)
         try? await apiClient.revokeToken()
 
@@ -149,6 +173,7 @@ final class AppState {
         showCompletionBanner = false
         bannerDismissTask?.cancel()
         bannerDismissTask = nil
+        globalBanner = nil
     }
 
     // MARK: - Storage
@@ -182,11 +207,13 @@ final class AppState {
             if maxFileSize > 0, task.fileSize > maxFileSize {
                 let limit = AppState.formatBytes(maxFileSize)
                 task.state = .failed("File exceeds the \(limit) limit for your plan.")
+                globalBanner = .quotaIssue("A file exceeds your current plan's file size limit.")
                 continue
             }
             let remaining = storageLimit - storageUsed
             if storageLimit > 0, task.fileSize > remaining {
                 task.state = .failed("Not enough storage space. Upgrade your plan for more space.")
+                globalBanner = .quotaIssue("You do not have enough available storage for this upload.")
                 continue
             }
 
@@ -229,6 +256,7 @@ final class AppState {
                 size: task.fileSize
             )
         }
+        hasActiveUploads = false
     }
 
     // MARK: - Formatting

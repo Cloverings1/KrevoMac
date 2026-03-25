@@ -34,6 +34,20 @@ struct MenuBarView: View {
 
     private var authenticatedView: some View {
         VStack(spacing: 0) {
+            if let banner = appState.globalBanner {
+                globalBannerView(banner)
+                    .padding(.horizontal, 12)
+                    .padding(.top, 12)
+                    .padding(.bottom, 8)
+            }
+
+            if appState.showCompletionBanner {
+                completionBanner
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 8)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
+
             ScrollView {
                 VStack(spacing: 0) {
                     // Storage meter
@@ -49,14 +63,6 @@ struct MenuBarView: View {
                     UploadDropZone(compact: appState.hasActiveUploads)
                         .padding(.horizontal, 12)
                         .padding(.vertical, 10)
-
-                    // Completion banner
-                    if appState.showCompletionBanner {
-                        completionBanner
-                            .padding(.horizontal, 12)
-                            .padding(.bottom, 8)
-                            .transition(.move(edge: .top).combined(with: .opacity))
-                    }
 
                     // Active uploads
                     if appState.hasActiveUploads {
@@ -169,6 +175,67 @@ struct MenuBarView: View {
     }
 
     // MARK: - Footer
+
+    @ViewBuilder
+    private func globalBannerView(_ banner: GlobalBanner) -> some View {
+        switch banner {
+        case .networkOffline:
+            bannerCard(
+                icon: "wifi.slash",
+                title: "Offline",
+                message: "Uploads pause until your connection returns.",
+                color: Color(hex: "F59E0B")
+            )
+
+        case .authRequired:
+            bannerCard(
+                icon: "person.crop.circle.badge.exclamationmark",
+                title: "Sign in again",
+                message: "Your device session expired.",
+                color: Color(hex: "EF4444")
+            )
+
+        case .quotaIssue(let message):
+            bannerCard(
+                icon: "externaldrive.badge.exclamationmark",
+                title: "Storage limit reached",
+                message: message,
+                color: Color(hex: "F59E0B")
+            )
+        }
+    }
+
+    private func bannerCard(icon: String, title: String, message: String, color: Color) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: icon)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(color)
+                .frame(width: 18)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Color.krevoPrimary)
+
+                Text(message)
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.krevoSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(color.opacity(0.08))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(color.opacity(0.18), lineWidth: 1)
+        )
+    }
 
     private var completionBanner: some View {
         HStack(spacing: 8) {
