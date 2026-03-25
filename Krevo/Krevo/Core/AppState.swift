@@ -74,6 +74,7 @@ final class AppState {
 
     let apiClient = KrevoAPIClient()
     let uploadEngine: UploadEngine
+    let historyStore = UploadHistoryStore()
 
     // MARK: - Init
 
@@ -86,6 +87,8 @@ final class AppState {
         guard !hasInitialized else { return }
         hasInitialized = true
         startNetworkMonitor()
+        let entries = await historyStore.load()
+        recentCompleted = entries.map { UploadTask(historyEntry: $0) }
         await checkAuth()
         startWeatherRefresh()
         await checkServerStatus()
@@ -217,6 +220,7 @@ final class AppState {
         weatherRefreshTask = nil
         uploadTasks.removeAll()
         recentCompleted.removeAll()
+        Task { await historyStore.clear() }
         pendingQueue.removeAll()
         runningCount = 0
         hasActiveUploads = false
@@ -426,10 +430,22 @@ final class AppState {
     private func handleUploadCompletion(_ task: UploadTask) {
         if case .completed = task.state {
             KrevoConstants.uploadLogger.info("Upload completed: \(task.fileName) (\(AppState.formatBytes(task.fileSize)))")
-            // Add to recent, keep last 5
+            // Add to recent, keep last N and persist
             recentCompleted.insert(task, at: 0)
-            if recentCompleted.count > 5 {
-                recentCompleted.removeLast()
+            if recentCompleted.count > KrevoConstants.maxHistoryCount {
+                recentCompleted = Array(recentCompleted.prefix(KrevoConstants.maxHistoryCount))
+            }
+
+            if case .completed(let fileId) = task.state {
+                let entry = HistoryEntry(
+                    id: task.id,
+                    fileName: task.fileName,
+                    fileSize: task.fileSize,
+                    shareURL: task.shareURL,
+                    completionTime: task.completionTime ?? Date(),
+                    fileId: fileId
+                )
+                Task { await historyStore.append(entry) }
             }
 
             // Show completion banner with filename

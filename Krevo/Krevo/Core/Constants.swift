@@ -27,6 +27,9 @@ nonisolated enum KrevoConstants {
     // Upload queue
     static let maxConcurrentUploads = 3
 
+    // History
+    static let maxHistoryCount = 50
+
     // Logging
     static let logger = Logger(subsystem: "io.krevo.mac", category: "general")
     static let uploadLogger = Logger(subsystem: "io.krevo.mac", category: "upload")

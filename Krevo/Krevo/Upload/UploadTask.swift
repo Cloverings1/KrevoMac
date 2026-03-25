@@ -92,6 +92,18 @@ final class UploadTask: Identifiable {
         self.state = .failed(message)
     }
 
+    /// Create a display-only task hydrated from a persisted history entry.
+    init(historyEntry entry: HistoryEntry) {
+        self.id = entry.id
+        self.fileURL = URL(fileURLWithPath: "/dev/null")
+        self.relativePath = nil
+        self.fileName = entry.fileName
+        self.fileSize = entry.fileSize
+        self.shareURL = entry.shareURL
+        self.completionTime = entry.completionTime
+        self.state = .completed(fileId: entry.fileId)
+    }
+
     /// Update partial byte-level progress for an in-flight chunk.
     /// Called from the `ChunkUploadDelegate`'s `didSendBodyData` callback (throttled).
     func updatePartialProgress(partNumber: Int, bytesSent: Int64) {

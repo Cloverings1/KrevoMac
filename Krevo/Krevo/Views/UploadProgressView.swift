@@ -268,8 +268,8 @@ struct RecentCompletedRow: View {
                 .accessibilityLabel("Copy share link")
             }
 
-            if let startTime = task.startTime {
-                Text(AppState.formatTimeAgo(startTime, now: now))
+            if let displayTime = task.completionTime ?? task.startTime {
+                Text(AppState.formatTimeAgo(displayTime, now: now))
                     .font(.system(size: 11))
                     .foregroundStyle(Color.krevoTertiary)
             }
@@ -280,7 +280,7 @@ struct RecentCompletedRow: View {
         }
         .padding(.vertical, 2)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(task.fileName), uploaded \(task.startTime.map { AppState.formatTimeAgo($0, now: now) } ?? "recently")")
+        .accessibilityLabel("\(task.fileName), uploaded \((task.completionTime ?? task.startTime).map { AppState.formatTimeAgo($0, now: now) } ?? "recently")")
         .task {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(60))
