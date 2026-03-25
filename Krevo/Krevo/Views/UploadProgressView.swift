@@ -1,5 +1,4 @@
 import SwiftUI
-import Combine
 
 struct UploadProgressView: View {
     @Environment(AppState.self) private var appState
@@ -267,8 +266,11 @@ struct RecentCompletedRow: View {
         .padding(.vertical, 2)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(task.fileName), uploaded \(task.startTime.map { AppState.formatTimeAgo($0, now: now) } ?? "recently")")
-        .onReceive(Timer.publish(every: 60, on: .main, in: .common).autoconnect()) { _ in
-            now = Date()
+        .task {
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(60))
+                now = Date()
+            }
         }
     }
 }
