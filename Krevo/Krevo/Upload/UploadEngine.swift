@@ -243,6 +243,17 @@ actor UploadEngine {
                 parentId: nil
             )
 
+            // Validate server response before proceeding
+            guard initResponse.totalChunks > 0 else {
+                throw KrevoAPIError.serverError(statusCode: 500, message: "Server returned zero chunks for upload")
+            }
+            guard initResponse.chunkSize > 0 else {
+                throw KrevoAPIError.serverError(statusCode: 500, message: "Server returned zero chunk size")
+            }
+            guard !initResponse.uploadId.isEmpty, !initResponse.key.isEmpty else {
+                throw KrevoAPIError.serverError(statusCode: 500, message: "Server returned empty upload identifiers")
+            }
+
             try Task.checkCancellation()
 
             // Store upload identifiers for cancellation
