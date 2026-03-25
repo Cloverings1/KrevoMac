@@ -303,6 +303,7 @@ actor UploadEngine {
             ) async throws -> CompletedPart {
                 try Task.checkCancellation()
                 let url = try await urlCache.resolve(partNumber: partNumber)
+                try reader.validateIntegrity()
                 let chunkData = try reader.readChunk(at: idx)
                 let chunkSizeBytes = Int64(chunkData.count)
                 try Task.checkCancellation()

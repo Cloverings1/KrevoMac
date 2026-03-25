@@ -112,21 +112,29 @@ struct UploadProgressView: View {
         case .uploading:
             VStack(alignment: .leading, spacing: 4) {
                 AnimatedProgress(progress: task.progress)
+                    .accessibilityLabel("Upload progress")
+                    .accessibilityValue("\(Int(task.progress * 100)) percent")
 
-                HStack(spacing: 0) {
-                    if task.speed > 0 {
-                        Text(AppState.formatSpeed(task.speed))
-                            .font(.system(size: 11))
-                            .foregroundStyle(Color.krevoTertiary)
-                    }
+                if !appState.isNetworkAvailable {
+                    Text("Waiting for network...")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.krevoTertiary)
+                } else {
+                    HStack(spacing: 0) {
+                        if task.speed > 0 {
+                            Text(AppState.formatSpeed(task.speed))
+                                .font(.system(size: 11))
+                                .foregroundStyle(Color.krevoTertiary)
+                        }
 
-                    if let eta = task.estimatedTimeRemaining, task.speed > 0 {
-                        Text(" \u{00B7} ")
-                            .font(.system(size: 11))
-                            .foregroundStyle(Color.krevoTertiary)
-                        Text(AppState.formatETA(eta))
-                            .font(.system(size: 11))
-                            .foregroundStyle(Color.krevoTertiary)
+                        if let eta = task.estimatedTimeRemaining, task.speed > 0 {
+                            Text(" \u{00B7} ")
+                                .font(.system(size: 11))
+                                .foregroundStyle(Color.krevoTertiary)
+                            Text(AppState.formatETA(eta))
+                                .font(.system(size: 11))
+                                .foregroundStyle(Color.krevoTertiary)
+                        }
                     }
                 }
             }
@@ -178,6 +186,7 @@ struct UploadProgressView: View {
                     }
                     .buttonStyle(.plain)
                     .transition(.opacity)
+                    .accessibilityLabel("Cancel upload")
                 }
             }
             .animation(.easeInOut(duration: 0.15), value: isHovered)
@@ -194,6 +203,7 @@ struct UploadProgressView: View {
                 .buttonStyle(.plain)
                 .transition(.opacity)
                 .animation(.easeInOut(duration: 0.15), value: isHovered)
+                .accessibilityLabel("Cancel upload")
             }
 
         case .failed:
@@ -205,6 +215,7 @@ struct UploadProgressView: View {
                     .foregroundStyle(Color.krevoViolet)
             }
             .buttonStyle(.plain)
+            .accessibilityLabel("Retry upload")
 
         case .completed, .cancelled:
             EmptyView()

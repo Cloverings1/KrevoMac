@@ -1,4 +1,6 @@
 import SwiftUI
+import Network
+import os
 
 @Observable
 final class AppState {
@@ -16,18 +18,29 @@ final class AppState {
 
     var storageUsed: Int64 = 0
     var storageLimit: Int64 = 0
+    var maxFileSize: Int64 = 0
     var tier: String = ""
     var plan: String = ""
+    var storageLoaded = false
+
+    // MARK: - Network
+
+    var isNetworkAvailable = true
+    private var pathMonitor: NWPathMonitor?
 
     // MARK: - Uploads
 
     var uploadTasks: [UploadTask] = []
     var recentCompleted: [UploadTask] = []
 
+    // Upload queue — limits simultaneous uploads to prevent resource exhaustion
+    private var pendingQueue: [UploadTask] = []
+    private var runningCount = 0
+
     // MARK: - Services
 
     let apiClient = KrevoAPIClient()
-    var uploadEngine: UploadEngine!
+    let uploadEngine: UploadEngine
 
     // MARK: - Init
 
@@ -39,7 +52,19 @@ final class AppState {
     func initialize() async {
         guard !hasInitialized else { return }
         hasInitialized = true
+        startNetworkMonitor()
         await checkAuth()
+    }
+
+    private func startNetworkMonitor() {
+        let monitor = NWPathMonitor()
+        pathMonitor = monitor
+        monitor.pathUpdateHandler = { [weak self] path in
+            Task { @MainActor [weak self] in
+                self?.isNetworkAvailable = path.status == .satisfied
+            }
+        }
+        monitor.start(queue: DispatchQueue(label: "io.krevo.mac.network"))
     }
 
     // MARK: - Computed
@@ -81,7 +106,7 @@ final class AppState {
         do {
             try KeychainService.save(token: token)
         } catch {
-            print("[Krevo] Keychain save failed: \(error.localizedDescription)")
+            KrevoConstants.authLogger.error("Keychain save failed: \(error.localizedDescription)")
             // Surface the error so the user knows sign-in didn't persist
             isAuthenticated = false
             isCheckingAuth = false
@@ -102,10 +127,14 @@ final class AppState {
         isAuthenticated = false
         storageUsed = 0
         storageLimit = 0
+        maxFileSize = 0
+        storageLoaded = false
         tier = ""
         plan = ""
         uploadTasks.removeAll()
         recentCompleted.removeAll()
+        pendingQueue.removeAll()
+        runningCount = 0
     }
 
     // MARK: - Storage
@@ -123,18 +152,34 @@ final class AppState {
 
     func startUpload(urls: [URL]) {
         for url in urls {
-            do {
-                let task = try UploadTask(fileURL: url)
-                uploadTasks.insert(task, at: 0)
+            let task: UploadTask
 
-                Task {
-                    await uploadEngine.uploadFile(task: task)
-                    handleUploadCompletion(task)
-                }
+            do {
+                task = try UploadTask(fileURL: url)
             } catch {
-                // Skip files that can't be read
+                let failed = UploadTask(failedURL: url, message: "Could not read file: \(error.localizedDescription)")
+                uploadTasks.insert(failed, at: 0)
+                continue
             }
+
+            uploadTasks.insert(task, at: 0)
+
+            // Pre-flight: file size checks against plan limits
+            if maxFileSize > 0, task.fileSize > maxFileSize {
+                let limit = AppState.formatBytes(maxFileSize)
+                task.state = .failed("File exceeds the \(limit) limit for your plan.")
+                continue
+            }
+            let remaining = storageLimit - storageUsed
+            if storageLimit > 0, task.fileSize > remaining {
+                task.state = .failed("Not enough storage space. Upgrade your plan for more space.")
+                continue
+            }
+
+            pendingQueue.append(task)
         }
+
+        drainQueue()
     }
 
     func cancelUpload(_ task: UploadTask) {
@@ -149,7 +194,7 @@ final class AppState {
     }
 
     func retryUpload(_ task: UploadTask) {
-        // Reset the task state and re-enqueue
+        // Reset the task state and re-enqueue through the queue
         task.state = .pending
         task.progress = 0
         task.uploadedBytes = 0
@@ -158,14 +203,25 @@ final class AppState {
         task.completedChunks = 0
         task.totalChunks = 0
 
-        Task {
-            await uploadEngine.uploadFile(task: task)
-            handleUploadCompletion(task)
-        }
+        pendingQueue.append(task)
+        drainQueue()
     }
 
     func clearCompleted() {
         uploadTasks.removeAll { $0.state.isTerminal }
+    }
+
+    /// Abort all active uploads — used on app termination.
+    func abortAllUploads() async {
+        let active = activeUploads
+        for task in active {
+            await uploadEngine.cancelUpload(
+                taskId: task.id,
+                uploadId: task.uploadId,
+                key: task.uploadKey,
+                size: task.fileSize
+            )
+        }
     }
 
     // MARK: - Formatting
@@ -228,8 +284,26 @@ final class AppState {
     private func applyStorageInfo(_ info: StorageInfo) {
         storageUsed = info.used
         storageLimit = info.limit
+        maxFileSize = info.maxFileSize
         tier = info.tier
         plan = info.plan
+        storageLoaded = true
+    }
+
+    /// Drain the pending queue, launching uploads up to the concurrency limit.
+    private func drainQueue() {
+        while runningCount < KrevoConstants.maxConcurrentUploads,
+              let task = pendingQueue.first {
+            pendingQueue.removeFirst()
+            runningCount += 1
+
+            Task {
+                await uploadEngine.uploadFile(task: task)
+                handleUploadCompletion(task)
+                runningCount -= 1
+                drainQueue()
+            }
+        }
     }
 
     private func handleUploadCompletion(_ task: UploadTask) {

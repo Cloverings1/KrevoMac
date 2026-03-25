@@ -21,7 +21,7 @@ struct StorageMeterView: View {
 
             // Labels
             HStack {
-                Text(storageText)
+                Text(appState.storageLoaded ? storageText : "Loading...")
                     .font(.system(size: 12))
                     .foregroundStyle(Color.krevoSecondary)
 
@@ -32,6 +32,8 @@ struct StorageMeterView: View {
                     .foregroundStyle(Color.krevoSecondary)
             }
         }
+        .redacted(reason: appState.storageLoaded ? [] : .placeholder)
+        .accessibilityLabel(appState.storageLoaded ? "Storage: \(storageText)" : "Storage loading")
     }
 
     // MARK: - Computed

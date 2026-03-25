@@ -2,11 +2,14 @@ import Foundation
 
 nonisolated enum FileChunkError: Error, LocalizedError {
     case readFailed(expected: Int, got: Int)
+    case fileModified
 
     var errorDescription: String? {
         switch self {
         case .readFailed(let expected, let got):
             return "Failed to read chunk: expected \(expected) bytes, got \(got)"
+        case .fileModified:
+            return "File was modified during upload. Please retry with the original file."
         }
     }
 }
@@ -16,11 +19,14 @@ nonisolated enum FileChunkError: Error, LocalizedError {
 /// instance without locks — pread does not modify the file descriptor offset.
 nonisolated final class FileChunkReader: @unchecked Sendable {
     private let fileHandle: FileHandle
+    private let filePath: String
     let fileSize: Int64
     let chunkSize: Int
+    private let originalModificationDate: Date?
 
     init(url: URL, chunkSize: Int) throws {
         self.fileHandle = try FileHandle(forReadingFrom: url)
+        self.filePath = url.path
         let attrs = try FileManager.default.attributesOfItem(atPath: url.path)
         guard let size = attrs[.size] as? Int64 else {
             try? self.fileHandle.close()
@@ -28,6 +34,21 @@ nonisolated final class FileChunkReader: @unchecked Sendable {
         }
         self.fileSize = size
         self.chunkSize = chunkSize
+        self.originalModificationDate = attrs[.modificationDate] as? Date
+    }
+
+    /// Check that the file has not been modified since the reader was opened.
+    func validateIntegrity() throws {
+        let attrs = try FileManager.default.attributesOfItem(atPath: filePath)
+        let currentSize = attrs[.size] as? Int64
+        let currentMod = attrs[.modificationDate] as? Date
+
+        if currentSize != fileSize {
+            throw FileChunkError.fileModified
+        }
+        if let orig = originalModificationDate, let current = currentMod, orig != current {
+            throw FileChunkError.fileModified
+        }
     }
 
     var totalChunks: Int {

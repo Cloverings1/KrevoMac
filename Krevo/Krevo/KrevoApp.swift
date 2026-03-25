@@ -13,8 +13,10 @@ struct KrevoApp: App {
             if appState.hasActiveUploads {
                 Image(systemName: "arrow.up.circle.fill")
                     .symbolEffect(.pulse)
+                    .accessibilityLabel("Krevo — Upload in progress")
             } else {
                 Image(systemName: "arrow.up.circle")
+                    .accessibilityLabel("Krevo — Upload files")
             }
         }
         .menuBarExtraStyle(.window)
@@ -23,6 +25,17 @@ struct KrevoApp: App {
 
 // Handle krevo:// URL scheme via Apple Events (MenuBarExtra doesn't support .onOpenURL)
 class AppDelegate: NSObject, NSApplicationDelegate {
+
+    func applicationWillTerminate(_ notification: Notification) {
+        // Abort active uploads so the server can release storage quota.
+        // Bridge async cleanup to the synchronous termination callback with a short timeout.
+        let semaphore = DispatchSemaphore(value: 0)
+        Task { @MainActor in
+            await AppState.shared.abortAllUploads()
+            semaphore.signal()
+        }
+        _ = semaphore.wait(timeout: .now() + 5)
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSAppleEventManager.shared().setEventHandler(

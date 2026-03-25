@@ -48,6 +48,9 @@ struct UploadDropZone: View {
             handleDrop(providers)
             return true
         }
+        .accessibilityLabel("Drop zone")
+        .accessibilityHint("Drop files to upload, or activate to browse and select files")
+        .accessibilityAddTraits(.isButton)
     }
 
     // MARK: - File Picker

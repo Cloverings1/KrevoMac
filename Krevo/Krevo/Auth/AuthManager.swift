@@ -65,6 +65,9 @@ final class MacAuthPresentationProvider: NSObject, ASWebAuthenticationPresentati
     static let shared = MacAuthPresentationProvider()
 
     func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
-        NSApplication.shared.windows.first ?? NSWindow()
+        NSApplication.shared.keyWindow
+            ?? NSApplication.shared.windows.first(where: { $0.isVisible })
+            ?? NSApplication.shared.windows.first
+            ?? NSWindow()
     }
 }

@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 nonisolated enum KrevoConstants {
     static let baseURL = URL(string: "https://www.krevo.io")!
@@ -20,4 +21,12 @@ nonisolated enum KrevoConstants {
     // Keychain
     static let keychainService = "io.krevo.mac"
     static let keychainTokenKey = "device-token"
+
+    // Upload queue
+    static let maxConcurrentUploads = 3
+
+    // Logging
+    static let logger = Logger(subsystem: "io.krevo.mac", category: "general")
+    static let uploadLogger = Logger(subsystem: "io.krevo.mac", category: "upload")
+    static let authLogger = Logger(subsystem: "io.krevo.mac", category: "auth")
 }

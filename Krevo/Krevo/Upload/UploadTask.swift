@@ -75,48 +75,13 @@ final class UploadTask: Identifiable {
         self.fileSize = size
     }
 
-    /// Update progress from the upload engine.
-    func updateProgress(completedChunks: Int, uploadedBytes: Int64) {
-        self.completedChunks = completedChunks
-        // Clamp uploaded bytes to file size (last chunk may be smaller)
-        self.uploadedBytes = min(uploadedBytes, fileSize)
-        self.progress = fileSize > 0 ? Double(self.uploadedBytes) / Double(fileSize) : 1.0
-
-        // Compute instantaneous speed and apply EWMA smoothing
-        let now = Date()
-        speedSampleCount += 1
-
-        if let prevTime = lastSampleTime {
-            let timeDelta = now.timeIntervalSince(prevTime)
-            let bytesDelta = self.uploadedBytes - lastSampleBytes
-
-            if timeDelta > 0, bytesDelta >= 0 {
-                let instantSpeed = Double(bytesDelta) / timeDelta
-
-                // Wait for at least 3 samples before reporting speed
-                if speedSampleCount >= 3 {
-                    if self.speed == 0 {
-                        // First valid reading
-                        self.speed = min(max(instantSpeed, 0), Self.maxSpeedBps)
-                    } else {
-                        // EWMA: smooth out bursty chunk completions
-                        let smoothed = Self.ewmaAlpha * instantSpeed + (1.0 - Self.ewmaAlpha) * self.speed
-                        self.speed = min(max(smoothed, 0), Self.maxSpeedBps)
-                    }
-
-                    // Compute ETA
-                    let remaining = fileSize - self.uploadedBytes
-                    if self.speed > 0 {
-                        self.estimatedTimeRemaining = Double(remaining) / self.speed
-                    } else {
-                        self.estimatedTimeRemaining = nil
-                    }
-                }
-            }
-        }
-
-        lastSampleTime = now
-        lastSampleBytes = self.uploadedBytes
+    /// Create a task that is immediately in a failed state (e.g. file inaccessible, quota exceeded).
+    init(failedURL: URL, message: String) {
+        self.id = UUID()
+        self.fileURL = failedURL
+        self.fileName = failedURL.lastPathComponent
+        self.fileSize = 0
+        self.state = .failed(message)
     }
 
     /// Update partial byte-level progress for an in-flight chunk.
