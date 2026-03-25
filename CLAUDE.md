@@ -108,6 +108,7 @@ uploadTasks.insert(failed, at: 0)
 
 - **Don't add third-party dependencies** — the zero-dep policy is intentional
 - **Don't use `DispatchQueue.main.async`** — use `await MainActor.run { }` or `Task { @MainActor in }`
+- **Don't use `DispatchSemaphore` or `DispatchGroup`** — use structured concurrency (`async/await`, `TaskGroup`, `withCheckedContinuation`)
 - **Don't add `@Published`** — the project uses `@Observable`, not `ObservableObject`
 - **Don't bypass the upload queue** — always go through `pendingQueue` / `drainQueue()`, never fire a `Task` directly in `startUpload`
 - **Don't use `@vercel/kv` or `@vercel/postgres`** — not relevant; this is a native macOS app
@@ -140,5 +141,8 @@ initialization of immutable value 'chunkSize' was never used  (UploadEngine.swif
 
 - Upload resume after relaunch (needs state persistence + security-scoped bookmarks)
 - Sleep/wake explicit handling (existing retry loop handles this adequately)
-- Tests (all test files are Xcode-generated stubs)
+- Tests (all test files are Xcode-generated stubs; retry/progress math has unit tests)
 - Full keyboard navigation in the popover
+- Certificate pinning for enterprise (currently relies on OS validation)
+- Adaptive chunk timeout based on TTFB
+- Global memory budget coordinator across concurrent uploads
