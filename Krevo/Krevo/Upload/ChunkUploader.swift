@@ -17,28 +17,7 @@ nonisolated struct ChunkUploader: Sendable {
         to presignedURL: URL,
         partNumber: Int
     ) async throws -> String {
-        for attempt in 0..<KrevoConstants.maxRetries {
-            do {
-                return try await apiClient.uploadChunk(url: presignedURL, data: data)
-            } catch {
-                // Don't retry cancellation
-                try Task.checkCancellation()
-
-                if attempt >= KrevoConstants.maxRetries - 1 {
-                    throw error
-                }
-
-                // Exponential backoff with jitter
-                let baseDelay = KrevoConstants.retryBaseDelay * pow(2.0, Double(attempt))
-                let cappedDelay = min(baseDelay, KrevoConstants.retryMaxDelay)
-                let jitter = cappedDelay * Double.random(in: 0.8...1.2)
-
-                try await Task.sleep(for: .seconds(jitter))
-            }
-        }
-
-        // Should never reach here — the loop either returns or throws
-        throw KrevoAPIError.networkError("Upload failed after \(KrevoConstants.maxRetries) retries")
+        try await upload(data: data, to: presignedURL, partNumber: partNumber, onProgress: { _ in })
     }
 
     /// Upload a single chunk with byte-level progress reporting and exponential backoff retry.
