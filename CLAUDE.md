@@ -19,6 +19,22 @@ xcodebuild -project Krevo.xcodeproj -scheme Krevo -configuration Debug build
 ```
 
 - macOS 26.2+ deployment target, Xcode 26.2
+
+## Release builds
+
+Release builds go to `/Users/jonas/Desktop/krevomac/builds/` with versioned directories.
+
+```bash
+# Build a release candidate
+cd Krevo
+xcodebuild -project Krevo.xcodeproj -scheme Krevo -configuration Release build \
+  CONFIGURATION_BUILD_DIR=/Users/jonas/Desktop/krevomac/builds/<version>
+```
+
+- Version format: `1.0`, `1.1`, `1.2`, etc. (increment minor for each build)
+- Directory naming: `builds/<version>/` (e.g. `builds/1.0/`)
+- When asked to "make a build", create the next version number in sequence
+- Current latest: **1.0 Beta**
 - Zero third-party dependencies — Apple frameworks only
 - `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor` is set project-wide
 
