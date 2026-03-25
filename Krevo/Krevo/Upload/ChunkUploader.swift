@@ -47,6 +47,15 @@ nonisolated struct ChunkUploader: Sendable {
                 // Don't retry cancellation
                 try Task.checkCancellation()
 
+                // Don't retry auth or expiry errors — they won't resolve with retries
+                if let apiError = error as? KrevoAPIError {
+                    switch apiError {
+                    case .unauthorized, .uploadExpired:
+                        throw error
+                    default: break
+                    }
+                }
+
                 if attempt >= KrevoConstants.maxRetries - 1 {
                     KrevoConstants.uploadLogger.error("Chunk \(partNumber) failed after \(KrevoConstants.maxRetries) attempts: \(error.localizedDescription)")
                     throw error
