@@ -32,9 +32,10 @@ nonisolated enum UploadState: Sendable {
 @MainActor
 final class UploadTask: Identifiable {
     let id: UUID
-    let fileName: String
+    var fileName: String
     let fileSize: Int64
     let fileURL: URL
+    let relativePath: String?
 
     // Mutable state for UI binding
     var state: UploadState = .pending
@@ -67,10 +68,11 @@ final class UploadTask: Identifiable {
     private static let ewmaAlpha: Double = 0.3
     private static let maxSpeedBps: Double = 100_000_000_000 // 100 Gbps upper clamp
 
-    init(fileURL: URL) throws {
+    init(fileURL: URL, relativePath: String? = nil) throws {
         self.id = UUID()
         self.fileURL = fileURL
-        self.fileName = fileURL.lastPathComponent
+        self.relativePath = relativePath
+        self.fileName = relativePath ?? fileURL.lastPathComponent
 
         let attrs = try FileManager.default.attributesOfItem(atPath: fileURL.path)
         guard let size = attrs[.size] as? Int64 else {
@@ -80,10 +82,11 @@ final class UploadTask: Identifiable {
     }
 
     /// Create a task that is immediately in a failed state (e.g. file inaccessible, quota exceeded).
-    init(failedURL: URL, message: String) {
+    init(failedURL: URL, message: String, relativePath: String? = nil) {
         self.id = UUID()
         self.fileURL = failedURL
-        self.fileName = failedURL.lastPathComponent
+        self.relativePath = relativePath
+        self.fileName = relativePath ?? failedURL.lastPathComponent
         let attrs = try? FileManager.default.attributesOfItem(atPath: failedURL.path)
         self.fileSize = (attrs?[.size] as? Int64) ?? 0
         self.state = .failed(message)

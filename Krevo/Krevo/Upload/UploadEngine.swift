@@ -248,6 +248,7 @@ actor UploadEngine {
     /// Execute the full upload pipeline for a single file.
     /// All per-upload state (URL cache, chunk index) is local — no shared actor properties.
     private func executeUpload(task: UploadTask) async {
+        let taskFileName = await MainActor.run { task.fileName }
         await MainActor.run { task.state = .initializing }
 
         do {
@@ -516,10 +517,10 @@ actor UploadEngine {
             await MainActor.run { task.markCompleted(fileId: completeResponse.fileId, shareURL: shareURL) }
 
         } catch is CancellationError {
-            KrevoConstants.uploadLogger.info("Upload cancelled: \(task.fileName)")
+            KrevoConstants.uploadLogger.info("Upload cancelled: \(taskFileName)")
             await MainActor.run { task.markCancelled() }
         } catch {
-            KrevoConstants.uploadLogger.error("Upload failed: \(task.fileName) — \(error.localizedDescription)")
+            KrevoConstants.uploadLogger.error("Upload failed: \(taskFileName) — \(error.localizedDescription)")
             await MainActor.run { task.markFailed(error) }
         }
     }

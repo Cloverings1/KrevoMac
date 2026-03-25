@@ -14,7 +14,7 @@ struct UploadDropZone: View {
                 .foregroundStyle(isTargeted ? Color.krevoViolet : Color.krevoTertiary)
 
             VStack(spacing: 2) {
-                Text("Drop files here")
+                Text("Drop files or folders")
                     .font(.system(size: compact ? 12 : 13, weight: .medium))
                     .foregroundStyle(isTargeted ? Color.krevoPrimary : Color.krevoSecondary)
 
@@ -50,7 +50,7 @@ struct UploadDropZone: View {
             return true
         }
         .accessibilityLabel("Drop zone")
-        .accessibilityHint("Drop files to upload, or activate to browse and select files")
+        .accessibilityHint("Drop files or folders to upload, or activate to browse")
         .accessibilityAddTraits(.isButton)
     }
 
@@ -60,8 +60,8 @@ struct UploadDropZone: View {
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = true
         panel.canChooseFiles = true
-        panel.canChooseDirectories = false
-        panel.title = "Select Files to Upload"
+        panel.canChooseDirectories = true
+        panel.title = "Select Files or Folders to Upload"
 
         if panel.runModal() == .OK {
             appState.startUpload(urls: panel.urls)
@@ -79,10 +79,7 @@ struct UploadDropZone: View {
                     continue
                 }
                 if let url = await loadFileURL(from: provider) {
-                    var isDir: ObjCBool = false
-                    if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), !isDir.boolValue {
-                        urls.append(url)
-                    }
+                    urls.append(url)
                 }
             }
 

@@ -263,13 +263,15 @@ final class AppState {
             KrevoConstants.logger.warning("Storage info is stale — quota check may be inaccurate")
         }
 
-        for url in urls {
+        let expanded = expandURLs(urls)
+
+        for file in expanded {
             let task: UploadTask
 
             do {
-                task = try UploadTask(fileURL: url)
+                task = try UploadTask(fileURL: file.url, relativePath: file.relativePath)
             } catch {
-                let failed = UploadTask(failedURL: url, message: "Could not read file: \(error.localizedDescription)")
+                let failed = UploadTask(failedURL: file.url, message: "Could not read file: \(error.localizedDescription)", relativePath: file.relativePath)
                 uploadTasks.insert(failed, at: 0)
                 continue
             }
