@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 
 struct UploadProgressView: View {
     @Environment(AppState.self) private var appState
@@ -228,6 +229,8 @@ struct UploadProgressView: View {
 struct RecentCompletedRow: View {
     let task: UploadTask
 
+    @State private var now = Date()
+
     var body: some View {
         HStack(spacing: 8) {
             Image(systemName: "checkmark")
@@ -243,7 +246,7 @@ struct RecentCompletedRow: View {
             Spacer()
 
             if let startTime = task.startTime {
-                Text(AppState.formatTimeAgo(startTime))
+                Text(AppState.formatTimeAgo(startTime, now: now))
                     .font(.system(size: 11))
                     .foregroundStyle(Color.krevoTertiary)
             }
@@ -253,5 +256,10 @@ struct RecentCompletedRow: View {
                 .foregroundStyle(Color.krevoTertiary)
         }
         .padding(.vertical, 2)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(task.fileName), uploaded \(task.startTime.map { AppState.formatTimeAgo($0, now: now) } ?? "recently")")
+        .onReceive(Timer.publish(every: 60, on: .main, in: .common).autoconnect()) { _ in
+            now = Date()
+        }
     }
 }
