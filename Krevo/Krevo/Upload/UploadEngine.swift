@@ -10,11 +10,19 @@ import os
 /// cached high-water mark, a background batch refresh is kicked off so URLs are
 /// ready before the upload tasks need them.
 private actor PresignedURLCache {
-    private var urls: [Int: URL]
+    private struct CachedURL {
+        let url: URL
+        let fetchedAt: ContinuousClock.Instant
+    }
+
+    private var urls: [Int: CachedURL]
     private let uploadId: String
     private let key: String
     private let totalChunks: Int
     private let apiClient: KrevoAPIClient
+
+    /// Max age before a URL is considered near-expiry and evicted.
+    private let maxAge: Duration
 
     /// Tracks an in-flight refresh so concurrent cache misses coalesce into one request.
     private var inflightRefresh: Task<Void, any Error>?
@@ -34,11 +42,13 @@ private actor PresignedURLCache {
         self.key = key
         self.totalChunks = totalChunks
         self.apiClient = apiClient
+        self.maxAge = .seconds(KrevoConstants.presignedURLExpiry - KrevoConstants.presignedURLSafetyMargin)
 
-        var map: [Int: URL] = [:]
+        let now = ContinuousClock.now
+        var map: [Int: CachedURL] = [:]
         for pu in initial {
             if let url = URL(string: pu.url) {
-                map[pu.partNumber] = url
+                map[pu.partNumber] = CachedURL(url: url, fetchedAt: now)
             }
         }
         self.urls = map
@@ -49,9 +59,19 @@ private actor PresignedURLCache {
     /// Concurrent misses within the same batch coalesce into a single network request.
     ///
     /// After resolving, triggers predictive prefetch if we're approaching the cache boundary.
+    /// Check if a cached URL is still valid (not near expiry).
+    private func validURL(for partNumber: Int) -> URL? {
+        guard let cached = urls[partNumber] else { return nil }
+        if ContinuousClock.now - cached.fetchedAt >= maxAge {
+            urls.removeValue(forKey: partNumber) // Evict near-expiry URL
+            return nil
+        }
+        return cached.url
+    }
+
     func resolve(partNumber: Int) async throws -> URL {
-        // Fast path: already cached
-        if let url = urls[partNumber] {
+        // Fast path: already cached and not near expiry
+        if let url = validURL(for: partNumber) {
             triggerPrefetchIfNeeded(currentPart: partNumber)
             return url
         }
@@ -65,7 +85,7 @@ private actor PresignedURLCache {
            range.contains(partNumber)
         {
             try await inflight.value
-            if let url = urls[partNumber] {
+            if let url = validURL(for: partNumber) {
                 triggerPrefetchIfNeeded(currentPart: partNumber)
                 return url
             }
@@ -75,14 +95,14 @@ private actor PresignedURLCache {
         // Wait for any prefetch that might have our part
         if let prefetch = prefetchTask {
             try? await prefetch.value
-            if let url = urls[partNumber] {
+            if let url = validURL(for: partNumber) {
                 triggerPrefetchIfNeeded(currentPart: partNumber)
                 return url
             }
         }
 
-        // Build the list of parts we still need
-        let needed = (partNumber...endPart).filter { urls[$0] == nil }
+        // Build the list of parts we still need (validURL already evicted near-expiry entries)
+        let needed = (partNumber...endPart).filter { validURL(for: $0) == nil }
         guard !needed.isEmpty else {
             throw KrevoAPIError.serverError(
                 statusCode: 500,
@@ -127,7 +147,7 @@ private actor PresignedURLCache {
         inflightRefresh = nil
         inflightRange = nil
 
-        guard let url = urls[partNumber] else {
+        guard let url = validURL(for: partNumber) else {
             throw KrevoAPIError.serverError(
                 statusCode: 500,
                 message: "Failed to get presigned URL for part \(partNumber)"
@@ -152,7 +172,7 @@ private actor PresignedURLCache {
 
         let start = cacheHighPart + 1
         let end = min(start + KrevoConstants.urlRefreshBatchSize - 1, totalChunks)
-        let needed = (start...end).filter { urls[$0] == nil }
+        let needed = (start...end).filter { validURL(for: $0) == nil }
         guard !needed.isEmpty else { return }
 
         let capturedUploadId = uploadId
@@ -187,9 +207,10 @@ private actor PresignedURLCache {
     }
 
     private func storeRefreshedURLs(_ freshURLs: [PresignedURL]) {
+        let now = ContinuousClock.now
         for pu in freshURLs {
             if let url = URL(string: pu.url) {
-                urls[pu.partNumber] = url
+                urls[pu.partNumber] = CachedURL(url: url, fetchedAt: now)
             }
         }
     }

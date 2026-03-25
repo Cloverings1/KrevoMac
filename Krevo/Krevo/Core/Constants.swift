@@ -18,6 +18,7 @@ nonisolated enum KrevoConstants {
     static let chunkTimeout: TimeInterval = 600 // 10 minutes
     static let presignedURLExpiry: TimeInterval = 172_800 // 48 hours
     static let urlRefreshTimeout: TimeInterval = 45
+    static let presignedURLSafetyMargin: TimeInterval = 300 // Evict URLs within 5 min of expiry
 
     // Keychain
     static let keychainService = "io.krevo.mac"
