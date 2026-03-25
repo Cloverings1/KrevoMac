@@ -13,7 +13,7 @@ struct MenuBarView: View {
                 AuthView()
             }
         }
-        .frame(width: 320)
+        .frame(width: 320, height: 560)
         .background(Color.krevoBg)
     }
 
@@ -49,7 +49,7 @@ struct MenuBarView: View {
             }
 
             ScrollView {
-                VStack(spacing: 0) {
+                LazyVStack(spacing: 0) {
                     // Storage meter
                     StorageMeterView()
                         .padding(.horizontal, 16)
@@ -87,7 +87,6 @@ struct MenuBarView: View {
                 }
             }
             .scrollIndicators(.hidden)
-            .frame(maxHeight: 420)
 
             Divider()
                 .background(Color.krevoBorder)
@@ -95,6 +94,7 @@ struct MenuBarView: View {
             // Footer
             footerView
         }
+        .frame(width: 320)
     }
 
     // MARK: - Active Uploads
