@@ -34,7 +34,7 @@ xcodebuild -project Krevo.xcodeproj -scheme Krevo -configuration Release build \
 - Version format: `1.0`, `1.1`, `1.2`, etc. (increment minor for each build)
 - Directory naming: `builds/<version>/` (e.g. `builds/1.0/`)
 - When asked to "make a build", create the next version number in sequence
-- Current latest: **1.1 Beta**
+- Current latest: **1.2 Beta**
 - Zero third-party dependencies — Apple frameworks only
 - `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor` is set project-wide
 
