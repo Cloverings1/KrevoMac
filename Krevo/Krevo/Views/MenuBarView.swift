@@ -294,6 +294,10 @@ struct MenuBarView: View {
                 .stroke(Color(hex: "22C55E").opacity(0.2), lineWidth: 1)
         )
         .onTapGesture {
+            if let url = appState.completedShareURL {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(url, forType: .string)
+            }
             appState.showCompletionBanner = false
         }
     }

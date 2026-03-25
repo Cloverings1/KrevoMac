@@ -50,6 +50,7 @@ final class UploadTask: Identifiable {
     // Internal upload state (not for UI)
     var uploadId: String?
     var uploadKey: String?
+    var shareURL: String?
 
     // Per-chunk byte-level progress tracking
     /// Tracks partial bytes sent for each in-flight chunk (partNumber -> bytesSent).
@@ -171,11 +172,12 @@ final class UploadTask: Identifiable {
         lastSampleBytes = 0
     }
 
-    func markCompleted(fileId: String) {
+    func markCompleted(fileId: String, shareURL: String? = nil) {
         self.progress = 1.0
         self.uploadedBytes = fileSize
         self.estimatedTimeRemaining = 0
         self.completionTime = Date()
+        self.shareURL = shareURL
         self.state = .completed(fileId: fileId)
     }
 

@@ -71,6 +71,7 @@ nonisolated struct UploadCompleteResponse: Codable, Sendable {
     let key: String
     let filename: String
     let size: Int64
+    let shareURL: String?
 }
 
 // MARK: - API Client

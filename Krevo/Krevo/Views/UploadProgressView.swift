@@ -253,6 +253,21 @@ struct RecentCompletedRow: View {
 
             Spacer()
 
+            if task.shareURL != nil {
+                Button {
+                    if let url = task.shareURL {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(url, forType: .string)
+                    }
+                } label: {
+                    Image(systemName: "link")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(Color.krevoViolet)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Copy share link")
+            }
+
             if let startTime = task.startTime {
                 Text(AppState.formatTimeAgo(startTime, now: now))
                     .font(.system(size: 11))

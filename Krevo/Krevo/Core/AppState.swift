@@ -61,6 +61,7 @@ final class AppState {
     // Completion banner
     var showCompletionBanner = false
     var completedFileName = ""
+    var completedShareURL: String?
     private var bannerDismissTask: Task<Void, Never>?
     private var bannerGeneration: UInt64 = 0
 
@@ -413,6 +414,7 @@ final class AppState {
             bannerGeneration &+= 1
             let currentGeneration = bannerGeneration
             completedFileName = task.fileName
+            completedShareURL = task.shareURL
             bannerDismissTask?.cancel()
             showCompletionBanner = true
             bannerDismissTask = Task { @MainActor in
