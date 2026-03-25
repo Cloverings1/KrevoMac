@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 // MARK: - Error Types
 
@@ -301,6 +302,11 @@ actor KrevoAPIClient {
     /// The shared session has a 60-second `timeoutIntervalForRequest` for stall
     /// detection — if no data flows for 60 seconds the session times out automatically,
     /// letting the retry loop in `ChunkUploader` handle the retry.
+    /// Sendable box for sharing a URLSessionUploadTask reference with the cancellation handler.
+    private final class UploadTaskBox: @unchecked Sendable {
+        var task: URLSessionUploadTask?
+    }
+
     nonisolated func uploadChunkWithProgress(
         url: URL,
         data: Data,
@@ -310,15 +316,22 @@ actor KrevoAPIClient {
         request.httpMethod = "PUT"
         request.setValue("\(data.count)", forHTTPHeaderField: "Content-Length")
 
-        return try await withCheckedThrowingContinuation { continuation in
-            // Register per-task handler before creating the task
-            let task = progressSession.uploadTask(with: request, from: data)
-            progressRouter.register(
-                taskIdentifier: task.taskIdentifier,
-                onProgress: onProgress,
-                continuation: continuation
-            )
-            task.resume()
+        let box = UploadTaskBox()
+
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                let task = progressSession.uploadTask(with: request, from: data)
+                box.task = task
+                progressRouter.register(
+                    taskIdentifier: task.taskIdentifier,
+                    onProgress: onProgress,
+                    continuation: continuation
+                )
+                task.resume()
+            }
+        } onCancel: {
+            // Cancel the URLSessionTask so didCompleteWithError fires and cleans up the handler
+            box.task?.cancel()
         }
     }
 
@@ -434,7 +447,12 @@ private final class ChunkProgressRouter: NSObject, URLSessionTaskDelegate, URLSe
     ) {
         lock.lock()
         handlers[taskIdentifier] = TaskHandler(onProgress: onProgress, continuation: continuation)
+        let count = handlers.count
         lock.unlock()
+
+        if count > 500 {
+            KrevoConstants.uploadLogger.warning("ChunkProgressRouter: \(count) handlers registered — possible leak")
+        }
     }
 
     func urlSession(
