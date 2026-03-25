@@ -289,8 +289,17 @@ actor KrevoAPIClient {
             )
         }
 
-        // Strip surrounding quotes from ETag
-        return etag.trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+        // Strip surrounding quotes from ETag and validate format
+        let cleanEtag = etag.trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+        guard cleanEtag.count >= 16,
+              cleanEtag.allSatisfy({ $0.isHexDigit || $0 == "-" })
+        else {
+            throw KrevoAPIError.serverError(
+                statusCode: httpResponse.statusCode,
+                message: "Invalid ETag format in chunk upload response"
+            )
+        }
+        return cleanEtag
     }
 
     // MARK: - Chunk Upload with Progress (Direct to R2)
@@ -517,13 +526,15 @@ private final class ChunkProgressRouter: NSObject, URLSessionTaskDelegate, URLSe
         let rawEtag = response.value(forHTTPHeaderField: "ETag") ?? ""
         let etag = rawEtag.trimmingCharacters(in: CharacterSet(charactersIn: "\""))
 
-        if etag.isEmpty {
+        guard etag.count >= 16,
+              etag.allSatisfy({ $0.isHexDigit || $0 == "-" })
+        else {
             cont.resume(throwing: KrevoAPIError.serverError(
                 statusCode: response.statusCode,
-                message: "Missing ETag in chunk upload response"
+                message: "Invalid ETag in chunk upload response"
             ))
-        } else {
-            cont.resume(returning: etag)
+            return
         }
+        cont.resume(returning: etag)
     }
 }
