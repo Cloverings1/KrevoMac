@@ -6,6 +6,14 @@ struct KrevoApp: App {
     private var appState: AppState { AppState.shared }
 
     var body: some Scene {
+        WindowGroup("Krevo") {
+            MenuBarView()
+                .environment(appState)
+                .frame(minWidth: 320, idealWidth: 320, maxWidth: 320)
+        }
+        .windowResizability(.contentSize)
+        .defaultSize(width: 320, height: 520)
+
         MenuBarExtra {
             MenuBarView()
                 .environment(appState)
@@ -25,6 +33,8 @@ struct KrevoApp: App {
 
 // Handle krevo:// URL scheme via Apple Events (MenuBarExtra doesn't support .onOpenURL)
 class AppDelegate: NSObject, NSApplicationDelegate {
+
+    private var didOpenLaunchWindow = false
 
     func applicationWillTerminate(_ notification: Notification) {
         // Abort active uploads so the server can release storage quota.
@@ -49,6 +59,24 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         Task { @MainActor in
             await AppState.shared.initialize()
         }
+
+        DispatchQueue.main.async { [weak self] in
+            self?.openMainWindowIfNeeded()
+        }
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !flag {
+            openMainWindowIfNeeded(force: true)
+        }
+        return true
+    }
+
+    private func openMainWindowIfNeeded(force: Bool = false) {
+        guard force || !didOpenLaunchWindow else { return }
+        didOpenLaunchWindow = true
+        NSApp.activate(ignoringOtherApps: true)
+        NSApp.sendAction(Selector(("showAllWindows:")), to: nil, from: nil)
     }
 
     @objc private func handleGetURL(_ event: NSAppleEventDescriptor, withReplyEvent replyEvent: NSAppleEventDescriptor) {
