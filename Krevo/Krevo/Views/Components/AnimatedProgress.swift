@@ -22,7 +22,7 @@ struct AnimatedProgress: View {
             }
         }
         .frame(height: height)
-        .animation(.spring(response: 0.3, dampingFraction: 0.8), value: progress)
+        .animation(.linear(duration: 0.1), value: progress)
     }
 }
 
