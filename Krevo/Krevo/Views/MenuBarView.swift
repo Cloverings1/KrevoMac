@@ -248,6 +248,14 @@ struct MenuBarView: View {
                 message: message,
                 color: Color(hex: "F59E0B")
             )
+
+        case .serverAnnouncement(let message):
+            bannerCard(
+                icon: "megaphone.fill",
+                title: "Notice",
+                message: message,
+                color: Color.krevoViolet
+            )
         }
     }
 

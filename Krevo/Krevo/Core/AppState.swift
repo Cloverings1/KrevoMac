@@ -7,6 +7,7 @@ nonisolated enum GlobalBanner: Equatable {
     case networkOffline
     case authRequired
     case quotaIssue(String)
+    case serverAnnouncement(String)
 }
 
 @Observable
@@ -87,6 +88,21 @@ final class AppState {
         startNetworkMonitor()
         await checkAuth()
         startWeatherRefresh()
+        await checkServerStatus()
+    }
+
+    /// Check for server-driven announcements (best-effort, silent on failure).
+    private func checkServerStatus() async {
+        do {
+            let status = try await apiClient.getClientStatus()
+            if let message = status.message, !message.isEmpty {
+                globalBanner = .serverAnnouncement(message)
+            } else if case .serverAnnouncement = globalBanner {
+                globalBanner = nil // Clear stale announcement
+            }
+        } catch {
+            // Silent — server may not have this endpoint yet
+        }
     }
 
     private func startWeatherRefresh() {
@@ -230,6 +246,9 @@ final class AppState {
                 KrevoConstants.logger.error("Storage refresh retry failed: \(error.localizedDescription)")
             }
         }
+
+        // Piggyback: check for server announcements
+        await checkServerStatus()
     }
 
     var isStorageStale: Bool {

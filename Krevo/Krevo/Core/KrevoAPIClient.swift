@@ -147,6 +147,18 @@ actor KrevoAPIClient {
         _ = try await makeRequest(method: "DELETE", path: "/auth/device-token")
     }
 
+    // MARK: - Client Status
+
+    nonisolated struct ClientStatus: Codable, Sendable {
+        let message: String?
+        let severity: String? // "info", "warning", "error"
+    }
+
+    func getClientStatus() async throws -> ClientStatus {
+        let (data, _) = try await makeRequest(method: "GET", path: "/client-status")
+        return try decoder.decode(ClientStatus.self, from: data)
+    }
+
     // MARK: - Storage
 
     func getStorageInfo() async throws -> StorageInfo {
