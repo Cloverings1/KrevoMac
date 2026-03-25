@@ -79,6 +79,11 @@ actor KrevoAPIClient {
     /// `nonisolated(unsafe)` is safe here because URLSession is thread-safe and
     /// this property is never mutated after initialization.
     nonisolated(unsafe) private let chunkSession: URLSession
+    /// Shared delegate-based session for progress-aware chunk uploads.
+    /// Created once in init() — avoids per-chunk session creation overhead.
+    nonisolated(unsafe) private let progressSession: URLSession
+    /// Routing delegate that dispatches progress/completion callbacks to per-task handlers.
+    nonisolated(unsafe) private let progressRouter: ChunkProgressRouter
     private var deviceToken: String?
 
     private let decoder: JSONDecoder = {
@@ -108,6 +113,16 @@ actor KrevoAPIClient {
         chunkConfig.timeoutIntervalForRequest = KrevoConstants.chunkTimeout
         chunkConfig.waitsForConnectivity = true
         self.chunkSession = URLSession(configuration: chunkConfig)
+
+        // Shared delegate-based session for progress-aware chunk uploads
+        // Created once — reused across all chunks for all uploads
+        let router = ChunkProgressRouter()
+        let progressConfig = URLSessionConfiguration.default
+        progressConfig.httpMaximumConnectionsPerHost = 20
+        progressConfig.timeoutIntervalForRequest = 60
+        progressConfig.waitsForConnectivity = true
+        self.progressRouter = router
+        self.progressSession = URLSession(configuration: progressConfig, delegate: router, delegateQueue: nil)
     }
 
     func setToken(_ token: String) {
@@ -280,10 +295,10 @@ actor KrevoAPIClient {
     // MARK: - Chunk Upload with Progress (Direct to R2)
 
     /// Upload a chunk directly to R2 via presigned URL, reporting byte-level progress.
-    /// Uses a delegate-based URLSession to receive `didSendBodyData` callbacks.
+    /// Uses a single shared delegate-based URLSession with a routing delegate.
     /// `nonisolated` to avoid serializing concurrent uploads through the actor.
     ///
-    /// The per-request session uses a 60-second `timeoutIntervalForRequest` for stall
+    /// The shared session has a 60-second `timeoutIntervalForRequest` for stall
     /// detection — if no data flows for 60 seconds the session times out automatically,
     /// letting the retry loop in `ChunkUploader` handle the retry.
     nonisolated func uploadChunkWithProgress(
@@ -295,19 +310,15 @@ actor KrevoAPIClient {
         request.httpMethod = "PUT"
         request.setValue("\(data.count)", forHTTPHeaderField: "Content-Length")
 
-        let delegate = ChunkUploadDelegate(onProgress: onProgress)
-
-        // Per-request session with stall detection: 60s timeout if no data flows
-        let config = URLSessionConfiguration.default
-        config.timeoutIntervalForRequest = 60
-        config.waitsForConnectivity = true
-        let session = URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
-
-        defer { session.finishTasksAndInvalidate() }
-
         return try await withCheckedThrowingContinuation { continuation in
-            delegate.continuation = continuation
-            session.uploadTask(with: request, from: data).resume()
+            // Register per-task handler before creating the task
+            let task = progressSession.uploadTask(with: request, from: data)
+            progressRouter.register(
+                taskIdentifier: task.taskIdentifier,
+                onProgress: onProgress,
+                continuation: continuation
+            )
+            task.resume()
         }
     }
 
@@ -393,21 +404,37 @@ actor KrevoAPIClient {
     }
 }
 
-// MARK: - Chunk Upload Delegate
+// MARK: - Chunk Progress Router
 
-/// URLSession delegate for byte-level upload progress tracking.
-/// Each instance is paired with a single upload task and bridges delegate
-/// callbacks into async/await via `CheckedContinuation`.
+/// Shared URLSession delegate that routes progress and completion callbacks to per-task handlers.
+/// A single instance is reused across all chunk uploads — avoids creating sessions per chunk.
 ///
-/// Marked `@unchecked Sendable` because all mutation happens on the
-/// URLSession delegate queue (serial) before the continuation fires.
-private final class ChunkUploadDelegate: NSObject, URLSessionTaskDelegate, URLSessionDataDelegate, @unchecked Sendable {
-    let onProgress: @Sendable (Int64) -> Void
-    var httpResponse: HTTPURLResponse?
-    var continuation: CheckedContinuation<String, Error>?
+/// Each in-flight upload registers its progress handler + continuation before creating the
+/// URLSessionTask, and the router dispatches callbacks by `task.taskIdentifier`.
+///
+/// Marked `@unchecked Sendable` because:
+/// - URLSession serializes delegate callbacks on its delegate queue
+/// - `register` is called before `resume()`, so the entry exists by the time callbacks fire
+/// - `unregister` is called in `didCompleteWithError`, which runs on the same serial queue
+private final class ChunkProgressRouter: NSObject, URLSessionTaskDelegate, URLSessionDataDelegate, @unchecked Sendable {
 
-    init(onProgress: @Sendable @escaping (Int64) -> Void) {
-        self.onProgress = onProgress
+    private struct TaskHandler {
+        let onProgress: @Sendable (Int64) -> Void
+        var httpResponse: HTTPURLResponse?
+        var continuation: CheckedContinuation<String, Error>?
+    }
+
+    private let lock = NSLock()
+    private var handlers: [Int: TaskHandler] = [:]
+
+    func register(
+        taskIdentifier: Int,
+        onProgress: @Sendable @escaping (Int64) -> Void,
+        continuation: CheckedContinuation<String, Error>
+    ) {
+        lock.lock()
+        handlers[taskIdentifier] = TaskHandler(onProgress: onProgress, continuation: continuation)
+        lock.unlock()
     }
 
     func urlSession(
@@ -417,7 +444,10 @@ private final class ChunkUploadDelegate: NSObject, URLSessionTaskDelegate, URLSe
         totalBytesSent: Int64,
         totalBytesExpectedToSend: Int64
     ) {
-        onProgress(totalBytesSent)
+        lock.lock()
+        let handler = handlers[task.taskIdentifier]
+        lock.unlock()
+        handler?.onProgress(totalBytesSent)
     }
 
     func urlSession(
@@ -426,7 +456,11 @@ private final class ChunkUploadDelegate: NSObject, URLSessionTaskDelegate, URLSe
         didReceive response: URLResponse,
         completionHandler: @escaping (URLSession.ResponseDisposition) -> Void
     ) {
-        httpResponse = response as? HTTPURLResponse
+        if let http = response as? HTTPURLResponse {
+            lock.lock()
+            handlers[dataTask.taskIdentifier]?.httpResponse = http
+            lock.unlock()
+        }
         completionHandler(.allow)
     }
 
@@ -435,24 +469,30 @@ private final class ChunkUploadDelegate: NSObject, URLSessionTaskDelegate, URLSe
         task: URLSessionTask,
         didCompleteWithError error: (any Error)?
     ) {
+        let id = task.taskIdentifier
+
+        lock.lock()
+        var handler = handlers.removeValue(forKey: id)
+        lock.unlock()
+
+        guard let cont = handler?.continuation else { return }
+        handler?.continuation = nil
+
         if let error {
-            continuation?.resume(throwing: KrevoAPIError.networkError(error.localizedDescription))
-            continuation = nil
+            cont.resume(throwing: KrevoAPIError.networkError(error.localizedDescription))
             return
         }
 
-        guard let response = httpResponse else {
-            continuation?.resume(throwing: KrevoAPIError.networkError("No response from storage"))
-            continuation = nil
+        guard let response = handler?.httpResponse else {
+            cont.resume(throwing: KrevoAPIError.networkError("No response from storage"))
             return
         }
 
         guard (200...299).contains(response.statusCode) else {
-            continuation?.resume(throwing: KrevoAPIError.serverError(
+            cont.resume(throwing: KrevoAPIError.serverError(
                 statusCode: response.statusCode,
                 message: "Chunk upload failed"
             ))
-            continuation = nil
             return
         }
 
@@ -460,13 +500,12 @@ private final class ChunkUploadDelegate: NSObject, URLSessionTaskDelegate, URLSe
         let etag = rawEtag.trimmingCharacters(in: CharacterSet(charactersIn: "\""))
 
         if etag.isEmpty {
-            continuation?.resume(throwing: KrevoAPIError.serverError(
+            cont.resume(throwing: KrevoAPIError.serverError(
                 statusCode: response.statusCode,
                 message: "Missing ETag in chunk upload response"
             ))
         } else {
-            continuation?.resume(returning: etag)
+            cont.resume(returning: etag)
         }
-        continuation = nil
     }
 }
