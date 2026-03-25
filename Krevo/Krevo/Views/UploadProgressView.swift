@@ -116,6 +116,10 @@ struct UploadProgressView: View {
                     .accessibilityLabel("Upload progress")
                     .accessibilityValue("\(Int(task.progress * 100)) percent")
 
+                Text("\(AppState.formatBytes(task.uploadedBytes)) of \(AppState.formatBytes(task.fileSize))")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.krevoSecondary)
+
                 if !appState.isNetworkAvailable {
                     Text("Waiting for network...")
                         .font(.system(size: 11))
@@ -154,10 +158,15 @@ struct UploadProgressView: View {
                 .foregroundStyle(Color.krevoTertiary)
 
         case .failed(let message):
-            Text(message)
-                .font(.system(size: 11))
-                .foregroundStyle(Color(hex: "EF4444").opacity(0.8))
-                .lineLimit(2)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Upload failed")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Color(hex: "EF4444").opacity(0.95))
+                Text(message)
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color(hex: "EF4444").opacity(0.8))
+                    .lineLimit(2)
+            }
 
         case .cancelled:
             Text("Cancelled")
