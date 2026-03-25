@@ -243,6 +243,8 @@ actor UploadEngine {
                 parentId: nil
             )
 
+            KrevoConstants.uploadLogger.info("Upload initialized: \(initResponse.totalChunks) chunks, \(initResponse.chunkSize) bytes/chunk, uploadId=\(initResponse.uploadId)")
+
             // Validate server response before proceeding
             guard initResponse.totalChunks > 0 else {
                 throw KrevoAPIError.serverError(statusCode: 500, message: "Server returned zero chunks for upload")
@@ -492,8 +494,10 @@ actor UploadEngine {
             await MainActor.run { task.markCompleted(fileId: completeResponse.fileId) }
 
         } catch is CancellationError {
+            KrevoConstants.uploadLogger.info("Upload cancelled: \(task.fileName)")
             await MainActor.run { task.markCancelled() }
         } catch {
+            KrevoConstants.uploadLogger.error("Upload failed: \(task.fileName) — \(error.localizedDescription)")
             await MainActor.run { task.markFailed(error) }
         }
     }

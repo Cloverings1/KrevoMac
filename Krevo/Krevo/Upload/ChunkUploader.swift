@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// Uploads a single chunk to a presigned R2 URL with exponential backoff retry.
 /// Uses an iterative loop instead of recursion so chunk Data is not pinned on
@@ -47,6 +48,7 @@ nonisolated struct ChunkUploader: Sendable {
                 try Task.checkCancellation()
 
                 if attempt >= KrevoConstants.maxRetries - 1 {
+                    KrevoConstants.uploadLogger.error("Chunk \(partNumber) failed after \(KrevoConstants.maxRetries) attempts: \(error.localizedDescription)")
                     throw error
                 }
 
@@ -54,6 +56,8 @@ nonisolated struct ChunkUploader: Sendable {
                 let baseDelay = KrevoConstants.retryBaseDelay * pow(2.0, Double(attempt))
                 let cappedDelay = min(baseDelay, KrevoConstants.retryMaxDelay)
                 let jitter = cappedDelay * Double.random(in: 0.8...1.2)
+
+                KrevoConstants.uploadLogger.warning("Chunk \(partNumber) attempt \(attempt + 1)/\(KrevoConstants.maxRetries) failed: \(error.localizedDescription). Retrying in \(String(format: "%.1f", jitter))s")
 
                 try await Task.sleep(for: .seconds(jitter))
             }

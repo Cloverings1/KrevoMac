@@ -85,6 +85,7 @@ final class AppState {
         monitor.pathUpdateHandler = { [weak self] path in
             Task { @MainActor [weak self] in
                 let isAvailable = path.status == .satisfied
+                KrevoConstants.logger.info("Network status changed: \(isAvailable ? "online" : "offline")")
                 self?.isNetworkAvailable = isAvailable
 
                 if isAvailable {
@@ -373,6 +374,7 @@ final class AppState {
 
     private func handleUploadCompletion(_ task: UploadTask) {
         if case .completed = task.state {
+            KrevoConstants.uploadLogger.info("Upload completed: \(task.fileName) (\(AppState.formatBytes(task.fileSize)))")
             // Add to recent, keep last 5
             recentCompleted.insert(task, at: 0)
             if recentCompleted.count > 5 {
