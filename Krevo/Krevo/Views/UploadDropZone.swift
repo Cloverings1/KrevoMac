@@ -1,5 +1,6 @@
 import SwiftUI
 import UniformTypeIdentifiers
+import os
 
 struct UploadDropZone: View {
     @Environment(AppState.self) private var appState
@@ -87,6 +88,8 @@ struct UploadDropZone: View {
 
             if !urls.isEmpty {
                 appState.startUpload(urls: urls)
+            } else if !providers.isEmpty {
+                KrevoConstants.uploadLogger.warning("Drop resolved no valid file URLs from \(providers.count) provider(s)")
             }
         }
     }
