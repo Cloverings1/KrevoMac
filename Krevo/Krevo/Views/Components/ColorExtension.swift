@@ -27,6 +27,9 @@ extension Color {
 
     static let krevoViolet = Color(hex: "8B5CF6")
     static let krevoFuchsia = Color(hex: "D946EF")
+    static let krevoAmber = Color(hex: "F59E0B")
+    static let krevoCoral = Color(hex: "F97316")
+    static let krevoRed = Color(hex: "EF4444")
 
     static let krevoBorder = Color(hex: "27272A")
 }

@@ -51,13 +51,20 @@ struct StorageMeterView: View {
     private var barGradient: LinearGradient {
         let percent = appState.storagePercent
 
-        // Smooth hue transition: violet (0.75) → amber (0.15) → red (0.0)
-        let hue = 0.75 - (0.75 * min(percent, 1.0))
-        let leadingColor = Color(hue: hue, saturation: 0.7, brightness: 0.9)
-        let trailingColor = Color(hue: max(hue - 0.05, 0.0), saturation: 0.8, brightness: 0.85)
+        let colors: [Color]
+        switch percent {
+        case ..<0.65:
+            colors = [.krevoViolet, .krevoFuchsia]
+        case ..<0.85:
+            colors = [.krevoFuchsia, .krevoAmber]
+        case ..<0.95:
+            colors = [.krevoAmber, .krevoCoral]
+        default:
+            colors = [.krevoCoral, .krevoRed]
+        }
 
         return LinearGradient(
-            colors: [leadingColor, trailingColor],
+            colors: colors,
             startPoint: .leading,
             endPoint: .trailing
         )
