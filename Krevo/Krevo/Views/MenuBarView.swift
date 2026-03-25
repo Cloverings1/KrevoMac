@@ -50,10 +50,15 @@ struct MenuBarView: View {
 
             ScrollView {
                 LazyVStack(spacing: 0) {
+                    // Greeting + weather
+                    greetingRow
+                        .padding(.horizontal, 16)
+                        .padding(.top, 14)
+                        .padding(.bottom, 8)
+
                     // Storage meter
                     StorageMeterView()
                         .padding(.horizontal, 16)
-                        .padding(.top, 14)
                         .padding(.bottom, 12)
 
                     Divider()
@@ -95,6 +100,49 @@ struct MenuBarView: View {
             footerView
         }
         .frame(width: 320)
+    }
+
+    // MARK: - Greeting + Weather
+
+    private var greetingRow: some View {
+        HStack(alignment: .center) {
+            if !appState.userName.isEmpty {
+                Text(greetingText)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(Color.krevoPrimary)
+            }
+
+            Spacer()
+
+            if let weather = appState.weather {
+                HStack(spacing: 4) {
+                    Image(systemName: weather.icon)
+                        .font(.system(size: 12))
+                        .foregroundStyle(Color.krevoSecondary)
+                    Text("\(weather.temperature)°F")
+                        .font(.system(size: 13, weight: .medium).monospacedDigit())
+                        .foregroundStyle(Color.krevoSecondary)
+                }
+            }
+        }
+    }
+
+    private var greetingText: String {
+        let tz = TimeZone(identifier: "America/Chicago")!
+        var calendar = Calendar.current
+        calendar.timeZone = tz
+        let hour = calendar.component(.hour, from: Date())
+
+        let name = appState.userName.components(separatedBy: " ").first ?? appState.userName
+
+        switch hour {
+        case 0..<12:
+            return "Good morning, \(name)"
+        case 12..<21:
+            return "Good evening, \(name)"
+        default:
+            return "Lock in, \(name)"
+        }
     }
 
     // MARK: - Active Uploads
