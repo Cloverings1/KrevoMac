@@ -37,6 +37,17 @@ final class AppState {
     private var pendingQueue: [UploadTask] = []
     private var runningCount = 0
 
+    // Cached for menu bar icon — avoids re-filtering on every SwiftUI pass
+    var hasActiveUploads = false
+
+    // Storage refresh debounce
+    private var lastStorageRefresh: Date?
+
+    // Completion banner
+    var showCompletionBanner = false
+    var completedFileName = ""
+    private var bannerDismissTask: Task<Void, Never>?
+
     // MARK: - Services
 
     let apiClient = KrevoAPIClient()
@@ -70,7 +81,6 @@ final class AppState {
     // MARK: - Computed
 
     var activeUploads: [UploadTask] { uploadTasks.filter { $0.state.isActive } }
-    var hasActiveUploads: Bool { !activeUploads.isEmpty }
 
     var storagePercent: Double {
         guard storageLimit > 0 else { return 0 }
@@ -135,6 +145,10 @@ final class AppState {
         recentCompleted.removeAll()
         pendingQueue.removeAll()
         runningCount = 0
+        hasActiveUploads = false
+        showCompletionBanner = false
+        bannerDismissTask?.cancel()
+        bannerDismissTask = nil
     }
 
     // MARK: - Storage
@@ -271,7 +285,7 @@ final class AppState {
         return "\(hrs)h \(mins)m remaining"
     }
 
-    static func formatTimeAgo(_ date: Date) -> String {
+    static func formatTimeAgo(_ date: Date, now: Date = Date()) -> String {
         let interval = Date().timeIntervalSince(date)
         if interval < 60 { return "just now" }
         if interval < 3600 { return "\(Int(interval / 60)) min ago" }
@@ -296,11 +310,13 @@ final class AppState {
               let task = pendingQueue.first {
             pendingQueue.removeFirst()
             runningCount += 1
+            hasActiveUploads = true
 
             Task {
                 await uploadEngine.uploadFile(task: task)
                 handleUploadCompletion(task)
                 runningCount -= 1
+                hasActiveUploads = runningCount > 0
                 drainQueue()
             }
         }
@@ -314,8 +330,30 @@ final class AppState {
                 recentCompleted.removeLast()
             }
 
-            // Refresh storage after successful upload
-            Task { await refreshStorage() }
+            // Show completion banner with filename
+            completedFileName = task.fileName
+            bannerDismissTask?.cancel()
+            showCompletionBanner = true
+            bannerDismissTask = Task { @MainActor in
+                try? await Task.sleep(for: .seconds(3))
+                guard !Task.isCancelled else { return }
+                showCompletionBanner = false
+            }
+
+            // Haptic feedback for that "incredible feel"
+            NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .default)
+
+            // Debounced storage refresh — only fires once even if multiple uploads complete
+            // within the same 1-second window
+            let now = Date()
+            if lastStorageRefresh == nil || now.timeIntervalSince(lastStorageRefresh!) > 1.0 {
+                lastStorageRefresh = now
+                Task { await refreshStorage() }
+            }
+
+            // Auto-prune terminal tasks older than 5 minutes
+            let cutoff = now.addingTimeInterval(-300)
+            uploadTasks.removeAll { $0.state.isTerminal && ($0.completionTime ?? .distantPast) < cutoff }
         }
     }
 }
