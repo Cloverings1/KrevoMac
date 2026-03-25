@@ -54,6 +54,7 @@ final class AppState {
     var showCompletionBanner = false
     var completedFileName = ""
     private var bannerDismissTask: Task<Void, Never>?
+    private var bannerGeneration: UInt64 = 0
 
     // Global messaging
     var globalBanner: GlobalBanner?
@@ -374,13 +375,17 @@ final class AppState {
             }
 
             // Show completion banner with filename
+            bannerGeneration &+= 1
+            let currentGeneration = bannerGeneration
             completedFileName = task.fileName
             bannerDismissTask?.cancel()
             showCompletionBanner = true
             bannerDismissTask = Task { @MainActor in
                 try? await Task.sleep(for: .seconds(3))
-                guard !Task.isCancelled else { return }
-                showCompletionBanner = false
+                // Only dismiss if no newer banner has appeared
+                if bannerGeneration == currentGeneration {
+                    showCompletionBanner = false
+                }
             }
 
             // Haptic feedback for that "incredible feel"
