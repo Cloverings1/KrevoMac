@@ -146,6 +146,9 @@ final class UploadTask: Identifiable {
         inFlightPartialTotal = max(0, inFlightPartialTotal - previous)
         uploadedBytes = min(completedBytes + inFlightPartialTotal, fileSize)
         progress = fileSize > 0 ? Double(uploadedBytes) / Double(fileSize) : 1.0
+        // Reset speed sampling to avoid negative bytesDelta from the byte count regression
+        lastSampleTime = nil
+        lastSampleBytes = uploadedBytes
     }
 
     func resetForRetry() {
