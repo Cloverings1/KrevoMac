@@ -50,6 +50,14 @@ struct MenuBarView: View {
                         .padding(.horizontal, 12)
                         .padding(.vertical, 10)
 
+                    // Completion banner
+                    if appState.showCompletionBanner {
+                        completionBanner
+                            .padding(.horizontal, 12)
+                            .padding(.bottom, 8)
+                            .transition(.move(edge: .top).combined(with: .opacity))
+                    }
+
                     // Active uploads
                     if appState.hasActiveUploads {
                         Divider()
@@ -161,6 +169,39 @@ struct MenuBarView: View {
     }
 
     // MARK: - Footer
+
+    private var completionBanner: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 14))
+                .foregroundStyle(Color(hex: "22C55E"))
+
+            Text(appState.completedFileName)
+                .font(.system(size: 12))
+                .foregroundStyle(Color.krevoSecondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+
+            Text("uploaded")
+                .font(.system(size: 11))
+                .foregroundStyle(Color.krevoTertiary)
+
+            Spacer()
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color(hex: "22C55E").opacity(0.08))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Color(hex: "22C55E").opacity(0.2), lineWidth: 1)
+        )
+        .onTapGesture {
+            appState.showCompletionBanner = false
+        }
+    }
 
     private var footerView: some View {
         HStack {
