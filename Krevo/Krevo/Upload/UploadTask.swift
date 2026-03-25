@@ -45,6 +45,7 @@ final class UploadTask: Identifiable {
     var startTime: Date?
     var completedChunks: Int = 0
     var totalChunks: Int = 0
+    var completionTime: Date?
 
     // Internal upload state (not for UI)
     var uploadId: String?
@@ -80,7 +81,8 @@ final class UploadTask: Identifiable {
         self.id = UUID()
         self.fileURL = failedURL
         self.fileName = failedURL.lastPathComponent
-        self.fileSize = 0
+        let attrs = try? FileManager.default.attributesOfItem(atPath: failedURL.path)
+        self.fileSize = (attrs?[.size] as? Int64) ?? 0
         self.state = .failed(message)
     }
 
@@ -134,6 +136,7 @@ final class UploadTask: Identifiable {
         self.progress = 1.0
         self.uploadedBytes = fileSize
         self.estimatedTimeRemaining = 0
+        self.completionTime = Date()
         self.state = .completed(fileId: fileId)
     }
 
@@ -147,11 +150,13 @@ final class UploadTask: Identifiable {
         self.state = .failed(message)
         self.speed = 0
         self.estimatedTimeRemaining = nil
+        self.completionTime = Date()
     }
 
     func markCancelled() {
         self.state = .cancelled
         self.speed = 0
         self.estimatedTimeRemaining = nil
+        self.completionTime = Date()
     }
 }
