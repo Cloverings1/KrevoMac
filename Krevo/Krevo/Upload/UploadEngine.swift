@@ -293,6 +293,31 @@ actor UploadEngine {
             }
             let throttle = ProgressThrottle()
 
+            actor ProgressCoordinator {
+                private var pendingPartials: [Int: Int64] = [:]
+                private var lastFlush: ContinuousClock.Instant = .now - .seconds(1)
+
+                func record(partNumber: Int, bytesSent: Int64) {
+                    pendingPartials[partNumber] = bytesSent
+                }
+
+                func flushIfNeeded(force: Bool = false) -> [Int: Int64]? {
+                    let now = ContinuousClock.now
+                    let elapsed = now - lastFlush
+                    guard force || elapsed >= .milliseconds(125) else { return nil }
+                    guard !pendingPartials.isEmpty else {
+                        lastFlush = now
+                        return nil
+                    }
+
+                    let snapshot = pendingPartials
+                    pendingPartials.removeAll(keepingCapacity: true)
+                    lastFlush = now
+                    return snapshot
+                }
+            }
+            let progressCoordinator = ProgressCoordinator()
+
             // Helper: creates a chunk upload closure with byte-level progress tracking.
             func uploadChunk(
                 idx: Int,
@@ -312,11 +337,17 @@ actor UploadEngine {
                     partNumber: partNumber,
                     onProgress: { [weak throttle] bytesSent in
                         guard throttle?.shouldUpdate() == true else { return }
-                        Task { @MainActor in
-                            task.updatePartialProgress(
-                                partNumber: partNumber,
-                                bytesSent: bytesSent
-                            )
+                        Task {
+                            await progressCoordinator.record(partNumber: partNumber, bytesSent: bytesSent)
+                            guard let pending = await progressCoordinator.flushIfNeeded() else { return }
+                            await MainActor.run {
+                                for (partNumber, bytesSent) in pending {
+                                    task.updatePartialProgress(
+                                        partNumber: partNumber,
+                                        bytesSent: bytesSent
+                                    )
+                                }
+                            }
                         }
                     }
                 )
@@ -368,8 +399,20 @@ actor UploadEngine {
 
                     if isFirst || isLast || elapsed >= .milliseconds(200) {
                         throttle.lastUpdate = now
-                        await MainActor.run {
-                            task.completedChunks = count
+                        if let pending = await progressCoordinator.flushIfNeeded(force: true) {
+                            await MainActor.run {
+                                for (partNumber, bytesSent) in pending {
+                                    task.updatePartialProgress(
+                                        partNumber: partNumber,
+                                        bytesSent: bytesSent
+                                    )
+                                }
+                                task.completedChunks = count
+                            }
+                        } else {
+                            await MainActor.run {
+                                task.completedChunks = count
+                            }
                         }
                     }
 
