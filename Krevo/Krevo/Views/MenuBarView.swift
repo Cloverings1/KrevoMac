@@ -2,6 +2,7 @@ import SwiftUI
 
 struct MenuBarView: View {
     @Environment(AppState.self) private var appState
+    @State private var appeared = false
 
     var body: some View {
         Group {
@@ -55,11 +56,17 @@ struct MenuBarView: View {
                         .padding(.horizontal, 16)
                         .padding(.top, 14)
                         .padding(.bottom, 8)
+                        .opacity(appeared ? 1 : 0)
+                        .offset(y: appeared ? 0 : -8)
+                        .animation(.spring(response: 0.4, dampingFraction: 0.85), value: appeared)
 
                     // Storage meter
                     StorageMeterView()
                         .padding(.horizontal, 16)
                         .padding(.bottom, 12)
+                        .opacity(appeared ? 1 : 0)
+                        .offset(y: appeared ? 0 : -6)
+                        .animation(.spring(response: 0.4, dampingFraction: 0.85).delay(0.05), value: appeared)
 
                     Divider()
                         .background(Color.krevoBorder)
@@ -68,6 +75,9 @@ struct MenuBarView: View {
                     UploadDropZone(compact: appState.hasActiveUploads)
                         .padding(.horizontal, 12)
                         .padding(.vertical, 10)
+                        .scaleEffect(appeared ? 1 : 0.95)
+                        .opacity(appeared ? 1 : 0)
+                        .animation(.spring(response: 0.4, dampingFraction: 0.85).delay(0.1), value: appeared)
 
                     // Active uploads
                     if appState.hasActiveUploads {
@@ -100,6 +110,14 @@ struct MenuBarView: View {
             footerView
         }
         .frame(width: 320)
+        .onAppear {
+            withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) {
+                appeared = true
+            }
+        }
+        .onDisappear {
+            appeared = false
+        }
     }
 
     // MARK: - Greeting + Weather
