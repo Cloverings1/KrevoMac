@@ -332,7 +332,7 @@ final class AppState {
     }
 
     static func formatTimeAgo(_ date: Date, now: Date = Date()) -> String {
-        let interval = Date().timeIntervalSince(date)
+        let interval = now.timeIntervalSince(date)
         if interval < 60 { return "just now" }
         if interval < 3600 { return "\(Int(interval / 60)) min ago" }
         if interval < 86400 { return "\(Int(interval / 3600))h ago" }
