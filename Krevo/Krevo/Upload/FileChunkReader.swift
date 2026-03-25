@@ -24,29 +24,39 @@ nonisolated final class FileChunkReader: @unchecked Sendable {
     let chunkSize: Int
     private let originalModificationDate: Date?
 
+    /// Modification time captured at init via fstat — used for integrity checks.
+    private let originalMtimeSec: Int
+    private let originalMtimeNsec: Int
+
     init(url: URL, chunkSize: Int) throws {
         self.fileHandle = try FileHandle(forReadingFrom: url)
         self.filePath = url.path
-        let attrs = try FileManager.default.attributesOfItem(atPath: url.path)
-        guard let size = attrs[.size] as? Int64 else {
+        self.chunkSize = chunkSize
+
+        // Use fstat on the open descriptor for an atomic snapshot of size + mtime
+        var statBuf = stat()
+        guard fstat(fileHandle.fileDescriptor, &statBuf) == 0 else {
             try? self.fileHandle.close()
             throw FileChunkError.readFailed(expected: 0, got: 0)
         }
-        self.fileSize = size
-        self.chunkSize = chunkSize
-        self.originalModificationDate = attrs[.modificationDate] as? Date
+        self.fileSize = Int64(statBuf.st_size)
+        self.originalMtimeSec = statBuf.st_mtimespec.tv_sec
+        self.originalMtimeNsec = statBuf.st_mtimespec.tv_nsec
+        self.originalModificationDate = nil // kept for API compat, fstat fields are authoritative
     }
 
     /// Check that the file has not been modified since the reader was opened.
+    /// Uses fstat(2) on the open file descriptor for an atomic size + mtime check.
     func validateIntegrity() throws {
-        let attrs = try FileManager.default.attributesOfItem(atPath: filePath)
-        let currentSize = attrs[.size] as? Int64
-        let currentMod = attrs[.modificationDate] as? Date
-
-        if currentSize != fileSize {
+        var statBuf = stat()
+        guard fstat(fileHandle.fileDescriptor, &statBuf) == 0 else {
             throw FileChunkError.fileModified
         }
-        if let orig = originalModificationDate, let current = currentMod, orig != current {
+        if Int64(statBuf.st_size) != fileSize {
+            throw FileChunkError.fileModified
+        }
+        if statBuf.st_mtimespec.tv_sec != originalMtimeSec ||
+           statBuf.st_mtimespec.tv_nsec != originalMtimeNsec {
             throw FileChunkError.fileModified
         }
     }
