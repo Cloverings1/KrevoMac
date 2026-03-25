@@ -70,36 +70,37 @@ struct UploadDropZone: View {
     // MARK: - Drop Handler
 
     private func handleDrop(_ providers: [NSItemProvider]) {
-        let group = DispatchGroup()
-        let lock = NSLock()
-        var urls: [URL] = []
+        Task { @MainActor in
+            var urls: [URL] = []
 
-        for provider in providers {
-            guard provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) else {
-                continue
-            }
-
-            group.enter()
-            provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier) { item, _ in
-                defer { group.leave() }
-
-                guard let data = item as? Data,
-                      let url = URL(dataRepresentation: data, relativeTo: nil, isAbsolute: true)
-                else { return }
-
-                // Only accept files, not directories
-                var isDir: ObjCBool = false
-                if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), !isDir.boolValue {
-                    lock.lock()
-                    urls.append(url)
-                    lock.unlock()
+            for provider in providers {
+                guard provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) else {
+                    continue
+                }
+                if let url = await loadFileURL(from: provider) {
+                    var isDir: ObjCBool = false
+                    if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), !isDir.boolValue {
+                        urls.append(url)
+                    }
                 }
             }
-        }
 
-        group.notify(queue: .main) {
             if !urls.isEmpty {
                 appState.startUpload(urls: urls)
+            }
+        }
+    }
+
+    private func loadFileURL(from provider: NSItemProvider) async -> URL? {
+        await withCheckedContinuation { continuation in
+            provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier) { item, _ in
+                guard let data = item as? Data,
+                      let url = URL(dataRepresentation: data, relativeTo: nil, isAbsolute: true)
+                else {
+                    continuation.resume(returning: nil)
+                    return
+                }
+                continuation.resume(returning: url)
             }
         }
     }
