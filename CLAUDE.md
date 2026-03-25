@@ -43,7 +43,7 @@ xcodebuild -project Krevo.xcodeproj -scheme Krevo -configuration Release build \
 ```
 Krevo/Krevo/
   KrevoApp.swift           # @main entry, AppDelegate (URL scheme handler + termination)
-  Info.plist               # LSUIElement=true (no dock icon), krevo:// URL scheme
+  Info.plist               # LSUIElement=false (Dock icon visible), krevo:// URL scheme
   Krevo.entitlements       # Sandbox, network.client, files.user-selected.read-only
   Core/
     Constants.swift        # All tuning knobs, URLs, os.Logger instances
