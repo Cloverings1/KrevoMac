@@ -211,7 +211,7 @@ actor UploadEngine {
             try Task.checkCancellation()
 
             let fileSize = task.fileSize
-            let contentType = mimeType(for: task.fileURL)
+            let contentType = Self.mimeType(for: task.fileURL)
 
             // 1. Init upload on server
             let initResponse = try await apiClient.initUpload(
@@ -269,7 +269,6 @@ actor UploadEngine {
             // 6. Progress throttle — shared across all chunk progress callbacks for this upload.
             //    Only forwards partial-byte updates to the MainActor if 100ms+ have elapsed,
             //    preventing excessive main-thread hops from high-frequency delegate callbacks.
-            let chunkSize = initResponse.chunkSize
             final class ProgressThrottle: @unchecked Sendable {
                 private let lock = NSLock()
                 private var _lastUpdate: ContinuousClock.Instant = .now - .seconds(1)
@@ -303,7 +302,6 @@ actor UploadEngine {
             ) async throws -> CompletedPart {
                 try Task.checkCancellation()
                 let url = try await urlCache.resolve(partNumber: partNumber)
-                try reader.validateIntegrity()
                 let chunkData = try reader.readChunk(at: idx)
                 let chunkSizeBytes = Int64(chunkData.count)
                 try Task.checkCancellation()
@@ -333,7 +331,10 @@ actor UploadEngine {
                 return CompletedPart(etag: etag, partNumber: partNumber)
             }
 
-            // 7. Upload chunks with TaskGroup (limited concurrency)
+            // 7. Pre-upload integrity check
+            try reader.validateIntegrity()
+
+            // 8. Upload chunks with TaskGroup (limited concurrency)
             var completedParts: [CompletedPart] = []
 
             try await withThrowingTaskGroup(of: CompletedPart.self) { group in
@@ -390,7 +391,10 @@ actor UploadEngine {
 
             try Task.checkCancellation()
 
-            // 8. Complete upload
+            // Post-upload integrity check
+            try reader.validateIntegrity()
+
+            // 9. Complete upload
             await MainActor.run { task.state = .completing }
 
             let sortedParts = completedParts.sorted { $0.partNumber < $1.partNumber }
@@ -431,7 +435,7 @@ actor UploadEngine {
 
     // MARK: - MIME Type Detection
 
-    nonisolated func mimeType(for url: URL) -> String {
+    nonisolated static func mimeType(for url: URL) -> String {
         let ext = url.pathExtension.lowercased()
 
         if let utType = UTType(filenameExtension: ext),
