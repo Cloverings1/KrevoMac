@@ -28,6 +28,13 @@ final class AppState {
     var tier: String = ""
     var plan: String = ""
     var storageLoaded = false
+    var userName: String = ""
+
+    // MARK: - Weather
+
+    let weatherService = WeatherService()
+    var weather: WeatherData?
+    private var weatherRefreshTask: Task<Void, Never>?
 
     // MARK: - Network
 
@@ -77,6 +84,22 @@ final class AppState {
         hasInitialized = true
         startNetworkMonitor()
         await checkAuth()
+        startWeatherRefresh()
+    }
+
+    private func startWeatherRefresh() {
+        weatherRefreshTask = Task {
+            while !Task.isCancelled {
+                await refreshWeather()
+                try? await Task.sleep(for: .seconds(900)) // 15 minutes
+            }
+        }
+    }
+
+    func refreshWeather() async {
+        if let data = try? await weatherService.fetch() {
+            weather = data
+        }
     }
 
     private func startNetworkMonitor() {
@@ -170,6 +193,10 @@ final class AppState {
         storageLastRefreshed = nil
         tier = ""
         plan = ""
+        userName = ""
+        weather = nil
+        weatherRefreshTask?.cancel()
+        weatherRefreshTask = nil
         uploadTasks.removeAll()
         recentCompleted.removeAll()
         pendingQueue.removeAll()
@@ -347,6 +374,7 @@ final class AppState {
         maxFileSize = info.maxFileSize
         tier = info.tier
         plan = info.plan
+        userName = info.name ?? ""
         storageLoaded = true
     }
 

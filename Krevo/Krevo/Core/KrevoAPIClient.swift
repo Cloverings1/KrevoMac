@@ -42,6 +42,7 @@ nonisolated struct StorageInfo: Codable, Sendable {
     let tier: String
     let maxFileSize: Int64
     let retentionDays: Int
+    let name: String?
 }
 
 nonisolated struct UploadInitResponse: Codable, Sendable {
