@@ -1,5 +1,6 @@
 import Foundation
 import UniformTypeIdentifiers
+import os
 
 /// Thread-safe presigned URL cache for a single upload.
 /// Each upload gets its own instance so concurrent uploads never interfere.
@@ -97,13 +98,23 @@ private actor PresignedURLCache {
         let range = partNumber...endPart
 
         let refresh = Task {
-            let freshURLs = try await capturedApiClient.refreshPresignedURLs(
-                uploadId: capturedUploadId,
-                key: capturedKey,
-                partNumbers: capturedNeeded
-            )
+            let freshURLs = try await withThrowingTaskGroup(of: [PresignedURL].self) { group in
+                group.addTask {
+                    try await capturedApiClient.refreshPresignedURLs(
+                        uploadId: capturedUploadId,
+                        key: capturedKey,
+                        partNumbers: capturedNeeded
+                    )
+                }
+                group.addTask {
+                    try await Task.sleep(for: .seconds(KrevoConstants.urlRefreshTimeout))
+                    throw KrevoAPIError.networkError("Presigned URL refresh timed out after \(Int(KrevoConstants.urlRefreshTimeout))s")
+                }
+                let result = try await group.next()!
+                group.cancelAll()
+                return result
+            }
 
-            // Store results back — this hops to our own actor, not UploadEngine
             await self.storeRefreshedURLs(freshURLs)
         }
 
@@ -150,18 +161,29 @@ private actor PresignedURLCache {
         let capturedNeeded = Array(needed)
 
         prefetchTask = Task {
-            defer { Task { await self.clearPrefetchTask() } }
-            let freshURLs = try await capturedApiClient.refreshPresignedURLs(
-                uploadId: capturedUploadId,
-                key: capturedKey,
-                partNumbers: capturedNeeded
-            )
-            await self.storeRefreshedURLs(freshURLs)
+            do {
+                let freshURLs = try await withThrowingTaskGroup(of: [PresignedURL].self) { group in
+                    group.addTask {
+                        try await capturedApiClient.refreshPresignedURLs(
+                            uploadId: capturedUploadId,
+                            key: capturedKey,
+                            partNumbers: capturedNeeded
+                        )
+                    }
+                    group.addTask {
+                        try await Task.sleep(for: .seconds(KrevoConstants.urlRefreshTimeout))
+                        throw KrevoAPIError.networkError("Prefetch timed out")
+                    }
+                    let result = try await group.next()!
+                    group.cancelAll()
+                    return result
+                }
+                await self.storeRefreshedURLs(freshURLs)
+            } catch {
+                KrevoConstants.uploadLogger.warning("Presigned URL prefetch failed: \(error.localizedDescription)")
+            }
+            self.prefetchTask = nil
         }
-    }
-
-    private func clearPrefetchTask() {
-        prefetchTask = nil
     }
 
     private func storeRefreshedURLs(_ freshURLs: [PresignedURL]) {
