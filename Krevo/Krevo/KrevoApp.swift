@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 @main
 struct KrevoApp: App {
@@ -6,14 +7,6 @@ struct KrevoApp: App {
     private var appState: AppState { AppState.shared }
 
     var body: some Scene {
-        WindowGroup("Krevo") {
-            MenuBarView()
-                .environment(appState)
-                .frame(minWidth: 320, idealWidth: 320, maxWidth: 320)
-        }
-        .windowResizability(.contentSize)
-        .defaultSize(width: 320, height: 520)
-
         MenuBarExtra {
             MenuBarView()
                 .environment(appState)
@@ -33,18 +26,23 @@ struct KrevoApp: App {
 
 // Handle krevo:// URL scheme via Apple Events (MenuBarExtra doesn't support .onOpenURL)
 class AppDelegate: NSObject, NSApplicationDelegate {
-
-    private var didOpenLaunchWindow = false
-
-    func applicationWillTerminate(_ notification: Notification) {
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         // Abort active uploads so the server can release storage quota.
-        // Bridge async cleanup to the synchronous termination callback with a short timeout.
-        let semaphore = DispatchSemaphore(value: 0)
+        // Use async termination to avoid blocking with DispatchSemaphore.
         Task { @MainActor in
             await AppState.shared.abortAllUploads()
-            semaphore.signal()
+            NSApp.reply(toApplicationShouldTerminate: true)
         }
-        _ = semaphore.wait(timeout: .now() + 5)
+
+        // Safety timeout — if cleanup takes longer than 5s, terminate anyway
+        Task.detached {
+            try? await Task.sleep(for: .seconds(5))
+            await MainActor.run {
+                NSApp.reply(toApplicationShouldTerminate: true)
+            }
+        }
+
+        return .terminateLater
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -59,24 +57,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         Task { @MainActor in
             await AppState.shared.initialize()
         }
-
-        DispatchQueue.main.async { [weak self] in
-            self?.openMainWindowIfNeeded()
-        }
-    }
-
-    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        if !flag {
-            openMainWindowIfNeeded(force: true)
-        }
-        return true
-    }
-
-    private func openMainWindowIfNeeded(force: Bool = false) {
-        guard force || !didOpenLaunchWindow else { return }
-        didOpenLaunchWindow = true
-        NSApp.activate(ignoringOtherApps: true)
-        NSApp.sendAction(Selector(("showAllWindows:")), to: nil, from: nil)
     }
 
     @objc private func handleGetURL(_ event: NSAppleEventDescriptor, withReplyEvent replyEvent: NSAppleEventDescriptor) {
