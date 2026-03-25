@@ -42,6 +42,7 @@ final class AppState {
     // Upload queue — limits simultaneous uploads to prevent resource exhaustion
     private var pendingQueue: [UploadTask] = []
     private var runningCount = 0
+    private var isDraining = false
 
     // Cached for menu bar icon — avoids re-filtering on every SwiftUI pass
     var hasActiveUploads = false
@@ -350,6 +351,10 @@ final class AppState {
 
     /// Drain the pending queue, launching uploads up to the concurrency limit.
     private func drainQueue() {
+        guard !isDraining else { return }
+        isDraining = true
+        defer { isDraining = false }
+
         while runningCount < KrevoConstants.maxConcurrentUploads,
               let task = pendingQueue.first {
             pendingQueue.removeFirst()
@@ -360,7 +365,7 @@ final class AppState {
                 await uploadEngine.uploadFile(task: task)
                 handleUploadCompletion(task)
                 runningCount -= 1
-                hasActiveUploads = runningCount > 0
+                hasActiveUploads = runningCount > 0 || !pendingQueue.isEmpty
                 drainQueue()
             }
         }
