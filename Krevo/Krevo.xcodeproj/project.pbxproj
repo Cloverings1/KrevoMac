@@ -29,9 +29,22 @@
 		DD2186AF2F70BC88002C1497 /* KrevoUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = KrevoUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		DDFIXINFO2F70BC87002C1497 /* Exceptions for Resources folder in Krevo */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = DD2186972F70BC87002C1497 /* Krevo */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		DD21869A2F70BC87002C1497 /* Krevo */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				DDFIXINFO2F70BC87002C1497 /* Exceptions for Resources folder in Krevo */,
+			);
 			path = Krevo;
 			sourceTree = "<group>";
 		};
