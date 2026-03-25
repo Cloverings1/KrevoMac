@@ -106,11 +106,9 @@ struct MenuBarView: View {
 
     private var greetingRow: some View {
         HStack(alignment: .center) {
-            if !appState.userName.isEmpty {
-                Text(greetingText)
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(Color.krevoPrimary)
-            }
+            Text("Welcome")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(Color.krevoPrimary)
 
             Spacer()
 
@@ -124,24 +122,6 @@ struct MenuBarView: View {
                         .foregroundStyle(Color.krevoSecondary)
                 }
             }
-        }
-    }
-
-    private var greetingText: String {
-        let tz = TimeZone(identifier: "America/Chicago")!
-        var calendar = Calendar.current
-        calendar.timeZone = tz
-        let hour = calendar.component(.hour, from: Date())
-
-        let name = appState.userName.components(separatedBy: " ").first ?? appState.userName
-
-        switch hour {
-        case 0..<12:
-            return "Good morning, \(name)"
-        case 12..<21:
-            return "Good evening, \(name)"
-        default:
-            return "Lock in, \(name)"
         }
     }
 
