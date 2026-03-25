@@ -349,6 +349,11 @@ actor UploadEngine {
                                 }
                             }
                         }
+                    },
+                    onRetry: { partNumber in
+                        Task { @MainActor in
+                            task.resetPartialProgress(partNumber: partNumber)
+                        }
                     }
                 )
 

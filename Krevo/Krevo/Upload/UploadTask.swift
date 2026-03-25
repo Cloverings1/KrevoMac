@@ -138,6 +138,16 @@ final class UploadTask: Identifiable {
         progress = fileSize > 0 ? Double(uploadedBytes) / Double(fileSize) : 1.0
     }
 
+    /// Reset partial progress for a single chunk part when a retry starts.
+    /// Prevents stale bytes from the failed attempt from being double-counted.
+    func resetPartialProgress(partNumber: Int) {
+        let previous = inFlightPartialBytes[partNumber] ?? 0
+        inFlightPartialBytes[partNumber] = 0
+        inFlightPartialTotal = max(0, inFlightPartialTotal - previous)
+        uploadedBytes = min(completedBytes + inFlightPartialTotal, fileSize)
+        progress = fileSize > 0 ? Double(uploadedBytes) / Double(fileSize) : 1.0
+    }
+
     func resetForRetry() {
         state = .pending
         progress = 0

@@ -22,14 +22,20 @@ nonisolated struct ChunkUploader: Sendable {
 
     /// Upload a single chunk with byte-level progress reporting and exponential backoff retry.
     /// The `onProgress` closure receives `totalBytesSent` on each `didSendBodyData` callback.
+    /// The `onRetry` closure is called at the start of each retry to reset partial progress tracking.
     /// Stall detection is handled by the underlying URLSession's 60-second request timeout.
     func upload(
         data: Data,
         to presignedURL: URL,
         partNumber: Int,
-        onProgress: @Sendable @escaping (Int64) -> Void
+        onProgress: @Sendable @escaping (Int64) -> Void,
+        onRetry: (@Sendable (Int) -> Void)? = nil
     ) async throws -> String {
         for attempt in 0..<KrevoConstants.maxRetries {
+            if attempt > 0 {
+                onRetry?(partNumber)
+            }
+
             do {
                 return try await apiClient.uploadChunkWithProgress(
                     url: presignedURL,
