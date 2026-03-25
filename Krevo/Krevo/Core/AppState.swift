@@ -48,6 +48,7 @@ final class AppState {
 
     // Storage refresh debounce
     private var lastStorageRefresh: Date?
+    private var storageLastRefreshed: Date?
 
     // Completion banner
     var showCompletionBanner = false
@@ -163,6 +164,7 @@ final class AppState {
         storageLimit = 0
         maxFileSize = 0
         storageLoaded = false
+        storageLastRefreshed = nil
         tier = ""
         plan = ""
         uploadTasks.removeAll()
@@ -182,14 +184,34 @@ final class AppState {
         do {
             let info = try await apiClient.getStorageInfo()
             applyStorageInfo(info)
+            storageLastRefreshed = Date()
         } catch {
-            // Silent failure — storage meter keeps last known values
+            KrevoConstants.logger.error("Storage refresh failed: \(error.localizedDescription)")
+
+            // Single retry after 2s
+            do {
+                try await Task.sleep(for: .seconds(2))
+                let info = try await apiClient.getStorageInfo()
+                applyStorageInfo(info)
+                storageLastRefreshed = Date()
+            } catch {
+                KrevoConstants.logger.error("Storage refresh retry failed: \(error.localizedDescription)")
+            }
         }
+    }
+
+    var isStorageStale: Bool {
+        guard let lastRefresh = storageLastRefreshed else { return true }
+        return Date().timeIntervalSince(lastRefresh) > 300 // 5 minutes
     }
 
     // MARK: - Uploads
 
     func startUpload(urls: [URL]) {
+        if isStorageStale {
+            KrevoConstants.logger.warning("Storage info is stale — quota check may be inaccurate")
+        }
+
         for url in urls {
             let task: UploadTask
 
