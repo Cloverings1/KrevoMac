@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import UserNotifications
 
 @main
 struct KrevoApp: App {
@@ -25,7 +26,7 @@ struct KrevoApp: App {
 }
 
 // Handle krevo:// URL scheme via Apple Events (MenuBarExtra doesn't support .onOpenURL)
-class AppDelegate: NSObject, NSApplicationDelegate {
+class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         // Abort active uploads so the server can release storage quota.
         // Use async termination to avoid blocking with DispatchSemaphore.
@@ -53,11 +54,49 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             andEventID: AEEventID(kAEGetURL)
         )
 
+        // Request notification permission (alert only, no sound)
+        let center = UNUserNotificationCenter.current()
+        center.delegate = self
+        center.requestAuthorization(options: [.alert, .badge]) { _, _ in }
+
+        // Register "Copy Link" action for upload-complete notifications
+        let copyAction = UNNotificationAction(identifier: "COPY_LINK", title: "Copy Link", options: [])
+        let uploadCategory = UNNotificationCategory(
+            identifier: "UPLOAD_COMPLETE",
+            actions: [copyAction],
+            intentIdentifiers: []
+        )
+        center.setNotificationCategories([uploadCategory])
+
         // Run the one-time auth check at app launch
         Task { @MainActor in
             await AppState.shared.initialize()
         }
     }
+
+    // MARK: - Notification Delegate
+
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification
+    ) async -> UNNotificationPresentationOptions {
+        [.banner]
+    }
+
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse
+    ) async {
+        if response.actionIdentifier == "COPY_LINK",
+           let url = response.notification.request.content.userInfo["shareURL"] as? String {
+            await MainActor.run {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(url, forType: .string)
+            }
+        }
+    }
+
+    // MARK: - URL Scheme
 
     @objc private func handleGetURL(_ event: NSAppleEventDescriptor, withReplyEvent replyEvent: NSAppleEventDescriptor) {
         guard let urlString = event.paramDescriptor(forKeyword: AEKeyword(keyDirectObject))?.stringValue,

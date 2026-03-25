@@ -1,6 +1,7 @@
 import SwiftUI
 import Network
 import os
+import UserNotifications
 
 nonisolated enum GlobalBanner: Equatable {
     case networkOffline
@@ -427,6 +428,17 @@ final class AppState {
 
             // Haptic feedback for that "incredible feel"
             NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .default)
+
+            // System notification (no sound)
+            let content = UNMutableNotificationContent()
+            content.title = "Upload complete"
+            content.body = "\(task.fileName) — \(AppState.formatBytes(task.fileSize))"
+            content.categoryIdentifier = "UPLOAD_COMPLETE"
+            if let shareURL = task.shareURL {
+                content.userInfo = ["shareURL": shareURL]
+            }
+            let notifRequest = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
+            Task { try? await UNUserNotificationCenter.current().add(notifRequest) }
 
             // Debounced storage refresh — only fires once even if multiple uploads complete
             // within the same 1-second window
