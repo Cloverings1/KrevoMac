@@ -56,6 +56,8 @@ final class UploadTask: Identifiable {
     private var inFlightPartialBytes: [Int: Int64] = [:]
     /// Total bytes from fully completed chunks.
     var completedBytes: Int64 = 0
+    /// Running total of all in-flight partial bytes, avoids re-summing the dictionary.
+    private var inFlightPartialTotal: Int64 = 0
 
     // Speed calculation — EWMA smoothing
     private var speedSampleCount: Int = 0
@@ -89,9 +91,10 @@ final class UploadTask: Identifiable {
     /// Update partial byte-level progress for an in-flight chunk.
     /// Called from the `ChunkUploadDelegate`'s `didSendBodyData` callback (throttled).
     func updatePartialProgress(partNumber: Int, bytesSent: Int64) {
+        let previous = inFlightPartialBytes[partNumber] ?? 0
         inFlightPartialBytes[partNumber] = bytesSent
-        let totalPartial = inFlightPartialBytes.values.reduce(0, +)
-        let totalBytes = completedBytes + totalPartial
+        inFlightPartialTotal += (bytesSent - previous)
+        let totalBytes = completedBytes + inFlightPartialTotal
         let clampedBytes = min(totalBytes, fileSize)
 
         uploadedBytes = clampedBytes
@@ -129,7 +132,30 @@ final class UploadTask: Identifiable {
     /// Mark a chunk as fully completed. Moves its bytes from in-flight to completed.
     func markChunkCompleted(partNumber: Int, chunkSize: Int64) {
         completedBytes += chunkSize
-        inFlightPartialBytes.removeValue(forKey: partNumber)
+        let removed = inFlightPartialBytes.removeValue(forKey: partNumber) ?? 0
+        inFlightPartialTotal = max(0, inFlightPartialTotal - removed)
+        uploadedBytes = min(completedBytes + inFlightPartialTotal, fileSize)
+        progress = fileSize > 0 ? Double(uploadedBytes) / Double(fileSize) : 1.0
+    }
+
+    func resetForRetry() {
+        state = .pending
+        progress = 0
+        uploadedBytes = 0
+        speed = 0
+        estimatedTimeRemaining = nil
+        startTime = nil
+        completedChunks = 0
+        totalChunks = 0
+        completionTime = nil
+        uploadId = nil
+        uploadKey = nil
+        completedBytes = 0
+        inFlightPartialBytes.removeAll()
+        inFlightPartialTotal = 0
+        speedSampleCount = 0
+        lastSampleTime = nil
+        lastSampleBytes = 0
     }
 
     func markCompleted(fileId: String) {

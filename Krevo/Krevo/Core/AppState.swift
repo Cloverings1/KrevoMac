@@ -208,14 +208,7 @@ final class AppState {
     }
 
     func retryUpload(_ task: UploadTask) {
-        // Reset the task state and re-enqueue through the queue
-        task.state = .pending
-        task.progress = 0
-        task.uploadedBytes = 0
-        task.speed = 0
-        task.estimatedTimeRemaining = nil
-        task.completedChunks = 0
-        task.totalChunks = 0
+        task.resetForRetry()
 
         pendingQueue.append(task)
         drainQueue()
