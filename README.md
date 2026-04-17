@@ -17,6 +17,8 @@
 
 ---
 
+Launches as a `MenuBarExtra` app and stays visible in the Dock because `LSUIElement` is currently `false`.
+
 ## Architecture
 
 ```
@@ -59,7 +61,7 @@ The core of the app. Files upload **directly to R2** via presigned URLs — byte
 | Progress tracking | Per-chunk byte-level (URLSession delegate) |
 | Speed smoothing | EWMA (alpha 0.3) |
 | URL prefetching | Predictive at 75% cache consumption |
-| Resume | Persisted state + security-scoped bookmarks |
+| Resume | Not implemented across relaunches yet |
 
 ### How it works
 
@@ -101,6 +103,7 @@ Mac App                          Browser                         Krevo API
    │                                │◀──────────── { token } ────────┤
    │◀── krevo://auth?token=xxx ─────┤                                │
    │                                                                 │
+   ├─ AuthManager accepts callback only during active sign-in         │
    ├─ Store in Keychain                                              │
    ├─ X-Device-Token on all requests ──────────────────────────────▶│
 ```
@@ -173,7 +176,7 @@ Requires Xcode 26.2+. The app targets macOS 26.2. Signing team: `VJX635MVWF`.
 |-----|-------|
 | Bundle ID | `io.krevo.mac` |
 | URL Scheme | `krevo://` |
-| Dock Icon | Hidden (`LSUIElement = true`) |
+| Dock Icon | Visible (`LSUIElement = false`) |
 | Sandbox | Enabled (network client + user-selected files) |
 | API Base | `https://www.krevo.io/api` |
 | Auth Bridge | `https://www.krevo.io/mac-auth` |
