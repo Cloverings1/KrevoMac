@@ -15,7 +15,7 @@ nonisolated enum KrevoConstants {
     static let maxRetries = 6
     static let retryBaseDelay: TimeInterval = 0.5
     static let retryMaxDelay: TimeInterval = 30.0
-    static let chunkTimeout: TimeInterval = 600 // 10 minutes
+    static let chunkTimeout: TimeInterval = 60
     static let presignedURLExpiry: TimeInterval = 172_800 // 48 hours
     static let urlRefreshTimeout: TimeInterval = 45
     static let presignedURLSafetyMargin: TimeInterval = 300 // Evict URLs within 5 min of expiry

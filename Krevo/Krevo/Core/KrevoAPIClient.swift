@@ -8,6 +8,7 @@ nonisolated enum KrevoAPIError: Error, LocalizedError, Sendable {
     case quotaExceeded
     case fileTooLarge(maxBytes: Int64)
     case uploadExpired
+    case stalePresignedURL
     case rateLimited(retryAfter: Int)
     case serverError(statusCode: Int, message: String)
     case networkError(String)
@@ -23,6 +24,8 @@ nonisolated enum KrevoAPIError: Error, LocalizedError, Sendable {
             return String(format: "File exceeds the %.0f GB limit for your plan.", gb)
         case .uploadExpired:
             return "Upload session expired. Please try again."
+        case .stalePresignedURL:
+            return "Upload URL expired before the chunk completed. Retrying with a fresh URL."
         case .rateLimited(let retryAfter):
             return "Too many requests. Try again in \(retryAfter) seconds."
         case .serverError(let statusCode, let message):
@@ -74,6 +77,102 @@ nonisolated struct UploadCompleteResponse: Codable, Sendable {
     let shareURL: String?
 }
 
+private nonisolated enum ChunkUploadMapping {
+    static let refreshableStorageErrorCodes: Set<String> = [
+        "AccessDenied",
+        "AuthorizationQueryParametersError",
+        "ExpiredToken",
+        "InvalidArgument",
+        "NoSuchKey",
+        "RequestExpired",
+        "SignatureDoesNotMatch"
+    ]
+
+    static let storageErrorBodyLimit = 4_096
+}
+
+private struct StorageErrorPayload {
+    let code: String?
+    let message: String?
+}
+
+private nonisolated func tagValue(_ tag: String, in body: String) -> String? {
+    guard let start = body.range(of: "<\(tag)>") else { return nil }
+    guard let end = body.range(of: "</\(tag)>", range: start.upperBound..<body.endIndex) else { return nil }
+
+    let value = body[start.upperBound..<end.lowerBound]
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    return value.isEmpty ? nil : String(value)
+}
+
+private nonisolated func parseStorageErrorPayload(from data: Data?) -> StorageErrorPayload {
+    guard let data, !data.isEmpty else {
+        return StorageErrorPayload(code: nil, message: nil)
+    }
+
+    let truncated = data.prefix(ChunkUploadMapping.storageErrorBodyLimit)
+    guard let body = String(data: truncated, encoding: .utf8) else {
+        return StorageErrorPayload(code: nil, message: nil)
+    }
+
+    return StorageErrorPayload(
+        code: tagValue("Code", in: body),
+        message: tagValue("Message", in: body)
+    )
+}
+
+private nonisolated func retryAfterSeconds(from response: HTTPURLResponse) -> Int {
+    response.value(forHTTPHeaderField: "Retry-After")
+        .flatMap(Int.init) ?? 60
+}
+
+private nonisolated func mapChunkTransportError(_ error: Error) -> KrevoAPIError {
+    if let urlError = error as? URLError, urlError.code == .timedOut {
+        return .networkError(
+            "Chunk upload timed out after \(Int(KrevoConstants.chunkTimeout)) seconds without progress"
+        )
+    }
+
+    return .networkError(error.localizedDescription)
+}
+
+private nonisolated func mapChunkUploadError(
+    response: HTTPURLResponse,
+    body: Data? = nil
+) -> KrevoAPIError {
+    let payload = parseStorageErrorPayload(from: body)
+
+    if payload.code == "NoSuchUpload" {
+        return .uploadExpired
+    }
+
+    if response.statusCode == 429 {
+        return .rateLimited(retryAfter: retryAfterSeconds(from: response))
+    }
+
+    let shouldRefreshURL =
+        ChunkUploadMapping.refreshableStorageErrorCodes.contains(payload.code ?? "") ||
+        [403, 404, 410].contains(response.statusCode)
+
+    if shouldRefreshURL {
+        return .stalePresignedURL
+    }
+
+    return .serverError(
+        statusCode: response.statusCode,
+        message: payload.message ?? payload.code ?? "Chunk upload failed"
+    )
+}
+
+private nonisolated func normalizedChunkETag(from response: HTTPURLResponse) -> String? {
+    guard let rawETag = response.value(forHTTPHeaderField: "ETag") else { return nil }
+    let etag = rawETag.trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+    guard etag.count >= 16, etag.allSatisfy({ $0.isHexDigit || $0 == "-" }) else {
+        return nil
+    }
+    return etag
+}
+
 // MARK: - API Client
 
 actor KrevoAPIClient {
@@ -81,12 +180,12 @@ actor KrevoAPIClient {
     /// Immutable after init — used only by `uploadChunk` which is `nonisolated`.
     /// `nonisolated(unsafe)` is safe here because URLSession is thread-safe and
     /// this property is never mutated after initialization.
-    nonisolated(unsafe) private let chunkSession: URLSession
+    private let chunkSession: URLSession
     /// Shared delegate-based session for progress-aware chunk uploads.
     /// Created once in init() — avoids per-chunk session creation overhead.
-    nonisolated(unsafe) private let progressSession: URLSession
+    private let progressSession: URLSession
     /// Routing delegate that dispatches progress/completion callbacks to per-task handlers.
-    nonisolated(unsafe) private let progressRouter: ChunkProgressRouter
+    private let progressRouter: ChunkProgressRouter
     private var deviceToken: String?
 
     private let decoder: JSONDecoder = {
@@ -122,7 +221,7 @@ actor KrevoAPIClient {
         let router = ChunkProgressRouter()
         let progressConfig = URLSessionConfiguration.default
         progressConfig.httpMaximumConnectionsPerHost = 20
-        progressConfig.timeoutIntervalForRequest = 60
+        progressConfig.timeoutIntervalForRequest = KrevoConstants.chunkTimeout
         progressConfig.waitsForConnectivity = true
         self.progressRouter = router
         self.progressSession = URLSession(configuration: progressConfig, delegate: router, delegateQueue: nil)
@@ -278,11 +377,11 @@ actor KrevoAPIClient {
         request.httpBody = data
         request.setValue("\(data.count)", forHTTPHeaderField: "Content-Length")
 
-        let (_, response): (Data, URLResponse)
+        let (responseBody, response): (Data, URLResponse)
         do {
-            (_, response) = try await chunkSession.data(for: request)
+            (responseBody, response) = try await chunkSession.data(for: request)
         } catch {
-            throw KrevoAPIError.networkError(error.localizedDescription)
+            throw mapChunkTransportError(error)
         }
 
         guard let httpResponse = response as? HTTPURLResponse else {
@@ -290,30 +389,16 @@ actor KrevoAPIClient {
         }
 
         guard (200...299).contains(httpResponse.statusCode) else {
-            throw KrevoAPIError.serverError(
-                statusCode: httpResponse.statusCode,
-                message: "Chunk upload failed"
-            )
+            throw mapChunkUploadError(response: httpResponse, body: responseBody)
         }
 
-        guard let etag = httpResponse.value(forHTTPHeaderField: "ETag") else {
+        guard let etag = normalizedChunkETag(from: httpResponse) else {
             throw KrevoAPIError.serverError(
                 statusCode: httpResponse.statusCode,
-                message: "Missing ETag in chunk upload response"
+                message: "Invalid ETag in chunk upload response"
             )
         }
-
-        // Strip surrounding quotes from ETag and validate format
-        let cleanEtag = etag.trimmingCharacters(in: CharacterSet(charactersIn: "\""))
-        guard cleanEtag.count >= 16,
-              cleanEtag.allSatisfy({ $0.isHexDigit || $0 == "-" })
-        else {
-            throw KrevoAPIError.serverError(
-                statusCode: httpResponse.statusCode,
-                message: "Invalid ETag format in chunk upload response"
-            )
-        }
-        return cleanEtag
+        return etag
     }
 
     // MARK: - Chunk Upload with Progress (Direct to R2)
@@ -322,9 +407,9 @@ actor KrevoAPIClient {
     /// Uses a single shared delegate-based URLSession with a routing delegate.
     /// `nonisolated` to avoid serializing concurrent uploads through the actor.
     ///
-    /// The shared session has a 60-second `timeoutIntervalForRequest` for stall
-    /// detection — if no data flows for 60 seconds the session times out automatically,
-    /// letting the retry loop in `ChunkUploader` handle the retry.
+    /// The shared session uses `KrevoConstants.chunkTimeout` for request timeout
+    /// detection, so a chunk that makes no forward progress eventually times out
+    /// and the retry loop in `ChunkUploader` can react.
     /// Sendable box for sharing a URLSessionUploadTask reference with the cancellation handler.
     private final class UploadTaskBox: @unchecked Sendable {
         var task: URLSessionUploadTask?
@@ -457,6 +542,7 @@ private final class ChunkProgressRouter: NSObject, URLSessionTaskDelegate, URLSe
     private struct TaskHandler {
         let onProgress: @Sendable (Int64) -> Void
         var httpResponse: HTTPURLResponse?
+        var responseBody = Data()
         var continuation: CheckedContinuation<String, Error>?
     }
 
@@ -499,10 +585,25 @@ private final class ChunkProgressRouter: NSObject, URLSessionTaskDelegate, URLSe
     ) {
         if let http = response as? HTTPURLResponse {
             lock.lock()
-            handlers[dataTask.taskIdentifier]?.httpResponse = http
+            if var handler = handlers[dataTask.taskIdentifier] {
+                handler.httpResponse = http
+                handlers[dataTask.taskIdentifier] = handler
+            }
             lock.unlock()
         }
         completionHandler(.allow)
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        lock.lock()
+        if var handler = handlers[dataTask.taskIdentifier] {
+            let remaining = max(0, ChunkUploadMapping.storageErrorBodyLimit - handler.responseBody.count)
+            if remaining > 0 {
+                handler.responseBody.append(contentsOf: data.prefix(remaining))
+                handlers[dataTask.taskIdentifier] = handler
+            }
+        }
+        lock.unlock()
     }
 
     func urlSession(
@@ -520,7 +621,7 @@ private final class ChunkProgressRouter: NSObject, URLSessionTaskDelegate, URLSe
         handler?.continuation = nil
 
         if let error {
-            cont.resume(throwing: KrevoAPIError.networkError(error.localizedDescription))
+            cont.resume(throwing: mapChunkTransportError(error))
             return
         }
 
@@ -530,19 +631,11 @@ private final class ChunkProgressRouter: NSObject, URLSessionTaskDelegate, URLSe
         }
 
         guard (200...299).contains(response.statusCode) else {
-            cont.resume(throwing: KrevoAPIError.serverError(
-                statusCode: response.statusCode,
-                message: "Chunk upload failed"
-            ))
+            cont.resume(throwing: mapChunkUploadError(response: response, body: handler?.responseBody))
             return
         }
 
-        let rawEtag = response.value(forHTTPHeaderField: "ETag") ?? ""
-        let etag = rawEtag.trimmingCharacters(in: CharacterSet(charactersIn: "\""))
-
-        guard etag.count >= 16,
-              etag.allSatisfy({ $0.isHexDigit || $0 == "-" })
-        else {
+        guard let etag = normalizedChunkETag(from: response) else {
             cont.resume(throwing: KrevoAPIError.serverError(
                 statusCode: response.statusCode,
                 message: "Invalid ETag in chunk upload response"

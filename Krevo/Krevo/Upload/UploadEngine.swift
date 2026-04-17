@@ -135,17 +135,17 @@ private actor PresignedURLCache {
                 return result
             }
 
-            await self.storeRefreshedURLs(freshURLs)
+            self.storeRefreshedURLs(freshURLs)
         }
 
         inflightRefresh = refresh
         inflightRange = range
+        defer {
+            inflightRefresh = nil
+            inflightRange = nil
+        }
 
         try await refresh.value
-
-        // Clear the inflight state
-        inflightRefresh = nil
-        inflightRange = nil
 
         guard let url = validURL(for: partNumber) else {
             throw KrevoAPIError.serverError(
@@ -198,7 +198,7 @@ private actor PresignedURLCache {
                     group.cancelAll()
                     return result
                 }
-                await self.storeRefreshedURLs(freshURLs)
+                self.storeRefreshedURLs(freshURLs)
             } catch {
                 KrevoConstants.uploadLogger.warning("Presigned URL prefetch failed: \(error.localizedDescription)")
             }
@@ -214,6 +214,10 @@ private actor PresignedURLCache {
             }
         }
     }
+
+    func invalidate(partNumber: Int) {
+        urls.removeValue(forKey: partNumber)
+    }
 }
 
 /// Core upload engine. Orchestrates chunked multipart uploads to R2 via presigned URLs.
@@ -222,6 +226,12 @@ private actor PresignedURLCache {
 /// call or stored in a dedicated `PresignedURLCache` actor, so concurrent uploads never
 /// interfere with each other. Cancellation is handled by storing the real work task.
 actor UploadEngine {
+    private struct InitializedUploadContext: Sendable {
+        let uploadId: String
+        let key: String
+        let size: Int64
+    }
+
     private let apiClient: KrevoAPIClient
     private let chunkUploader: ChunkUploader
     private var activeOperations: [UUID: Task<Void, Never>] = [:]
@@ -249,6 +259,7 @@ actor UploadEngine {
     /// All per-upload state (URL cache, chunk index) is local — no shared actor properties.
     private func executeUpload(task: UploadTask) async {
         let taskFileName = await MainActor.run { task.fileName }
+        var initializedUpload: InitializedUploadContext?
         await MainActor.run { task.state = .initializing }
 
         do {
@@ -268,14 +279,19 @@ actor UploadEngine {
             KrevoConstants.uploadLogger.info("Upload initialized: \(initResponse.totalChunks) chunks, \(initResponse.chunkSize) bytes/chunk, uploadId=\(initResponse.uploadId)")
 
             // Validate server response before proceeding
+            guard !initResponse.uploadId.isEmpty, !initResponse.key.isEmpty else {
+                throw KrevoAPIError.serverError(statusCode: 500, message: "Server returned empty upload identifiers")
+            }
+            initializedUpload = InitializedUploadContext(
+                uploadId: initResponse.uploadId,
+                key: initResponse.key,
+                size: fileSize
+            )
             guard initResponse.totalChunks > 0 else {
                 throw KrevoAPIError.serverError(statusCode: 500, message: "Server returned zero chunks for upload")
             }
             guard initResponse.chunkSize > 0 else {
                 throw KrevoAPIError.serverError(statusCode: 500, message: "Server returned zero chunk size")
-            }
-            guard !initResponse.uploadId.isEmpty, !initResponse.key.isEmpty else {
-                throw KrevoAPIError.serverError(statusCode: 500, message: "Server returned empty upload identifiers")
             }
 
             try Task.checkCancellation()
@@ -358,6 +374,10 @@ actor UploadEngine {
                     pendingPartials[partNumber] = bytesSent
                 }
 
+                func reset(partNumber: Int) {
+                    pendingPartials.removeValue(forKey: partNumber)
+                }
+
                 func flushIfNeeded(force: Bool = false) -> [Int: Int64]? {
                     let now = ContinuousClock.now
                     let elapsed = now - lastFlush
@@ -383,45 +403,71 @@ actor UploadEngine {
                 task: UploadTask
             ) async throws -> CompletedPart {
                 try Task.checkCancellation()
-                let url = try await urlCache.resolve(partNumber: partNumber)
                 let chunkData = try reader.readChunk(at: idx)
                 let chunkSizeBytes = Int64(chunkData.count)
-                try Task.checkCancellation()
+                let maxPresignedURLRefreshAttempts = 2
+                var refreshAttempts = 0
 
-                let etag = try await chunkUploader.upload(
-                    data: chunkData,
-                    to: url,
-                    partNumber: partNumber,
-                    onProgress: { [weak throttle] bytesSent in
-                        guard throttle?.shouldUpdate() == true else { return }
-                        Task {
-                            await progressCoordinator.record(partNumber: partNumber, bytesSent: bytesSent)
-                            guard let pending = await progressCoordinator.flushIfNeeded() else { return }
-                            await MainActor.run {
-                                for (partNumber, bytesSent) in pending {
-                                    task.updatePartialProgress(
-                                        partNumber: partNumber,
-                                        bytesSent: bytesSent
-                                    )
+                while true {
+                    try Task.checkCancellation()
+                    let url = try await urlCache.resolve(partNumber: partNumber)
+
+                    do {
+                        let etag = try await chunkUploader.upload(
+                            data: chunkData,
+                            to: url,
+                            partNumber: partNumber,
+                            onProgress: { [throttle] bytesSent in
+                                guard throttle.shouldUpdate() else { return }
+                                Task {
+                                    await progressCoordinator.record(partNumber: partNumber, bytesSent: bytesSent)
+                                    guard let pending = await progressCoordinator.flushIfNeeded() else { return }
+                                    await MainActor.run {
+                                        for (partNumber, bytesSent) in pending {
+                                            task.updatePartialProgress(
+                                                partNumber: partNumber,
+                                                bytesSent: bytesSent
+                                            )
+                                        }
+                                        task.updateSpeed()
+                                    }
+                                }
+                            },
+                            onRetry: { partNumber in
+                                Task {
+                                    await progressCoordinator.reset(partNumber: partNumber)
+                                    await MainActor.run {
+                                        task.resetPartialProgress(partNumber: partNumber)
+                                    }
                                 }
                             }
+                        )
+
+                        await MainActor.run {
+                            task.markChunkCompleted(
+                                partNumber: partNumber,
+                                chunkSize: chunkSizeBytes
+                            )
                         }
-                    },
-                    onRetry: { partNumber in
-                        Task { @MainActor in
+
+                        return CompletedPart(etag: etag, partNumber: partNumber)
+                    } catch KrevoAPIError.stalePresignedURL {
+                        guard refreshAttempts < maxPresignedURLRefreshAttempts else {
+                            throw KrevoAPIError.stalePresignedURL
+                        }
+
+                        refreshAttempts += 1
+                        await urlCache.invalidate(partNumber: partNumber)
+                        await progressCoordinator.reset(partNumber: partNumber)
+                        await MainActor.run {
                             task.resetPartialProgress(partNumber: partNumber)
                         }
+
+                        KrevoConstants.uploadLogger.warning(
+                            "Chunk \(partNumber) presigned URL became invalid. Refreshing URL (\(refreshAttempts)/\(maxPresignedURLRefreshAttempts))"
+                        )
                     }
-                )
-
-                await MainActor.run {
-                    task.markChunkCompleted(
-                        partNumber: partNumber,
-                        chunkSize: chunkSizeBytes
-                    )
                 }
-
-                return CompletedPart(etag: etag, partNumber: partNumber)
             }
 
             // 7. Pre-upload integrity check
@@ -512,14 +558,17 @@ actor UploadEngine {
                 contentType: contentType,
                 parentId: nil
             )
+            initializedUpload = nil
 
             let shareURL = completeResponse.shareURL ?? "https://www.krevo.io/file/\(completeResponse.fileId)"
             await MainActor.run { task.markCompleted(fileId: completeResponse.fileId, shareURL: shareURL) }
 
         } catch is CancellationError {
+            await abortRemoteUpload(initializedUpload, context: "cancellation for \(taskFileName)")
             KrevoConstants.uploadLogger.info("Upload cancelled: \(taskFileName)")
             await MainActor.run { task.markCancelled() }
         } catch {
+            await abortRemoteUpload(initializedUpload, context: "failed upload for \(taskFileName)")
             KrevoConstants.uploadLogger.error("Upload failed: \(taskFileName) — \(error.localizedDescription)")
             await MainActor.run { task.markFailed(error) }
         }
@@ -528,15 +577,32 @@ actor UploadEngine {
     // MARK: - Cancel Upload
 
     func cancelUpload(taskId: UUID, uploadId: String?, key: String?, size: Int64?) async {
-        activeOperations[taskId]?.cancel()
-        activeOperations.removeValue(forKey: taskId)
+        let operation = activeOperations.removeValue(forKey: taskId)
+        operation?.cancel()
 
-        // Abort on server to release storage quota
-        if let uploadId, let key, let size {
-            try? await apiClient.abortUpload(
-                uploadId: uploadId,
-                key: key,
-                size: size
+        // The active upload task owns post-init cleanup. Fall back to a direct abort only
+        // if nothing is still running to catch cancellation and release reserved quota.
+        if operation == nil, let uploadId, let key, let size {
+            await abortRemoteUpload(
+                InitializedUploadContext(uploadId: uploadId, key: key, size: size),
+                context: "external cancellation fallback for task \(taskId)"
+            )
+        }
+    }
+
+    private func abortRemoteUpload(_ upload: InitializedUploadContext?, context: String) async {
+        guard let upload else { return }
+
+        do {
+            try await apiClient.abortUpload(
+                uploadId: upload.uploadId,
+                key: upload.key,
+                size: upload.size
+            )
+            KrevoConstants.uploadLogger.info("Aborted upload \(upload.uploadId) after \(context)")
+        } catch {
+            KrevoConstants.uploadLogger.warning(
+                "Failed to abort upload \(upload.uploadId) after \(context): \(error.localizedDescription)"
             )
         }
     }

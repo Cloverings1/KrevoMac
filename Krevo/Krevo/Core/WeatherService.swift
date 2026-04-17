@@ -92,10 +92,10 @@ actor WeatherService {
 
 // MARK: - Open-Meteo Response
 
-private struct OpenMeteoResponse: Decodable {
+private nonisolated struct OpenMeteoResponse: Decodable, Sendable {
     let current: Current
 
-    struct Current: Decodable {
+    struct Current: Decodable, Sendable {
         let temperature_2m: Double
         let weather_code: Int
     }

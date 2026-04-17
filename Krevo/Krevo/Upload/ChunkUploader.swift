@@ -5,9 +5,8 @@ import os
 /// Uses an iterative loop instead of recursion so chunk Data is not pinned on
 /// multiple stack frames during backoff sleep.
 ///
-/// The progress-aware overload uses `uploadChunkWithProgress` which creates a
-/// per-request URLSession with a 60-second stall timeout — if no data flows for
-/// 60 seconds the request times out automatically and the retry loop handles it.
+/// The progress-aware overload uses `uploadChunkWithProgress` on a shared session
+/// whose request timeout is `KrevoConstants.chunkTimeout`.
 nonisolated struct ChunkUploader: Sendable {
     let apiClient: KrevoAPIClient
 
@@ -24,7 +23,7 @@ nonisolated struct ChunkUploader: Sendable {
     /// Upload a single chunk with byte-level progress reporting and exponential backoff retry.
     /// The `onProgress` closure receives `totalBytesSent` on each `didSendBodyData` callback.
     /// The `onRetry` closure is called at the start of each retry to reset partial progress tracking.
-    /// Stall detection is handled by the underlying URLSession's 60-second request timeout.
+    /// Stall detection is handled by the shared upload session's request timeout.
     func upload(
         data: Data,
         to presignedURL: URL,
@@ -48,10 +47,13 @@ nonisolated struct ChunkUploader: Sendable {
                 try Task.checkCancellation()
 
                 // Don't retry auth or expiry errors — they won't resolve with retries
+                var retryAfterOverride: Double?
                 if let apiError = error as? KrevoAPIError {
                     switch apiError {
-                    case .unauthorized, .uploadExpired:
+                    case .unauthorized, .uploadExpired, .stalePresignedURL:
                         throw error
+                    case .rateLimited(let retryAfter):
+                        retryAfterOverride = Double(retryAfter)
                     default: break
                     }
                 }
@@ -61,14 +63,19 @@ nonisolated struct ChunkUploader: Sendable {
                     throw error
                 }
 
-                // Exponential backoff with jitter
+                // Exponential backoff with jitter, respecting server Retry-After
                 let baseDelay = KrevoConstants.retryBaseDelay * pow(2.0, Double(attempt))
                 let cappedDelay = min(baseDelay, KrevoConstants.retryMaxDelay)
                 let jitter = cappedDelay * Double.random(in: 0.8...1.2)
+                let delay = if let retryAfter = retryAfterOverride {
+                    max(retryAfter, jitter)
+                } else {
+                    jitter
+                }
 
-                KrevoConstants.uploadLogger.warning("Chunk \(partNumber) attempt \(attempt + 1)/\(KrevoConstants.maxRetries) failed: \(error.localizedDescription). Retrying in \(String(format: "%.1f", jitter))s")
+                KrevoConstants.uploadLogger.warning("Chunk \(partNumber) attempt \(attempt + 1)/\(KrevoConstants.maxRetries) failed: \(error.localizedDescription). Retrying in \(String(format: "%.1f", delay))s")
 
-                try await Task.sleep(for: .seconds(jitter))
+                try await Task.sleep(for: .seconds(delay))
             }
         }
 
