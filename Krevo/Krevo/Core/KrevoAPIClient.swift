@@ -203,7 +203,7 @@ actor KrevoAPIClient {
     init() {
         // Session for Krevo API calls (includes default headers)
         let apiConfig = URLSessionConfiguration.default
-        apiConfig.httpMaximumConnectionsPerHost = 20
+        apiConfig.httpMaximumConnectionsPerHost = KrevoConstants.maxConcurrentChunks
         apiConfig.timeoutIntervalForRequest = 600
         apiConfig.waitsForConnectivity = true
         apiConfig.httpAdditionalHeaders = ["Content-Type": "application/json"]
@@ -211,7 +211,10 @@ actor KrevoAPIClient {
 
         // Separate session for direct R2 chunk uploads (no auth headers)
         let chunkConfig = URLSessionConfiguration.default
-        chunkConfig.httpMaximumConnectionsPerHost = 20
+        chunkConfig.httpMaximumConnectionsPerHost = max(
+            KrevoConstants.maxConcurrentChunks,
+            KrevoConstants.maxConcurrentUploads
+        )
         chunkConfig.timeoutIntervalForRequest = KrevoConstants.chunkTimeout
         chunkConfig.waitsForConnectivity = true
         self.chunkSession = URLSession(configuration: chunkConfig)
@@ -220,7 +223,10 @@ actor KrevoAPIClient {
         // Created once — reused across all chunks for all uploads
         let router = ChunkProgressRouter()
         let progressConfig = URLSessionConfiguration.default
-        progressConfig.httpMaximumConnectionsPerHost = 20
+        progressConfig.httpMaximumConnectionsPerHost = max(
+            KrevoConstants.maxConcurrentChunks,
+            KrevoConstants.maxConcurrentUploads
+        )
         progressConfig.timeoutIntervalForRequest = KrevoConstants.chunkTimeout
         progressConfig.waitsForConnectivity = true
         self.progressRouter = router

@@ -9,6 +9,12 @@ nonisolated enum KrevoConstants {
 
     // Upload constants (match server-side graphite-uploader.ts)
     static let maxConcurrentChunks = 20
+    static let minConcurrentChunks = 2
+    static let concurrencyScaleWindow = 12
+    static let concurrencyScaleUpFailureRate = 0.08
+    static let concurrencyScaleDownFailureRate = 0.28
+    static let targetChunkLatencySeconds: TimeInterval = 1.4
+    static let chunkFailureLatencyPenaltySeconds: TimeInterval = 2.8
     static let maxMemoryBudget = 500_000_000 // 500 MB
     static let initialPresignedParts = 128
     static let urlRefreshBatchSize = 128

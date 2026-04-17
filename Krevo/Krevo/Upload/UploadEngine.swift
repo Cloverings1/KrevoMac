@@ -2,6 +2,116 @@ import Foundation
 import UniformTypeIdentifiers
 import os
 
+private struct CompletedChunkResult: Sendable {
+    let part: CompletedPart
+    let chunkSize: Int64
+    let duration: Duration
+}
+
+private actor ChunkConcurrencyController {
+    private struct Sample: Sendable {
+        let success: Bool
+        let duration: Duration
+    }
+
+    private let minConcurrency: Int
+    private let maxConcurrency: Int
+    private var currentConcurrency: Int
+    private var samples: [Sample] = []
+    private let windowSize: Int
+    private let targetLatency: Duration
+    private let failureLatencyPenalty: Duration
+
+    init(
+        minConcurrency: Int,
+        maxConcurrency: Int,
+        initialConcurrency: Int
+    ) {
+        self.minConcurrency = minConcurrency
+        self.maxConcurrency = maxConcurrency
+        self.currentConcurrency = initialConcurrency
+        self.windowSize = max(1, KrevoConstants.concurrencyScaleWindow)
+        self.targetLatency = .seconds(KrevoConstants.targetChunkLatencySeconds)
+        self.failureLatencyPenalty = .seconds(KrevoConstants.chunkFailureLatencyPenaltySeconds)
+    }
+
+    func currentConcurrency() -> Int {
+        currentConcurrency
+    }
+
+    func reportChunkSuccess(duration: Duration) {
+        samples.append(Sample(success: true, duration: duration))
+        sanitizeSamples()
+        adjustLimits()
+    }
+
+    func reportChunkFailure(error: Error) {
+        let effectiveError = classifyError(error)
+        let duration: Duration = .seconds(effectiveError.isTerminal ? 0 : 1)
+        samples.append(Sample(success: false, duration: duration))
+        sanitizeSamples()
+
+        // Conservative downshift on non-terminal failures to avoid saturating a degraded path.
+        if !effectiveError.isTerminal {
+            currentConcurrency = max(minConcurrency, currentConcurrency - 1)
+        }
+        adjustLimits()
+    }
+
+    private func sanitizeSamples() {
+        if samples.count > windowSize {
+            samples = Array(samples.suffix(windowSize))
+        }
+    }
+
+    private func durationSeconds(_ duration: Duration) -> Double {
+        let component = duration.components
+        return Double(component.seconds) + Double(component.attoseconds) / 1_000_000_000_000_000_000
+    }
+
+    private func adjustLimits() {
+        guard samples.count == windowSize else { return }
+
+        let failures = samples.filter { !$0.success }.count
+        let failureRate = Double(failures) / Double(windowSize)
+        let successfulDurations = samples.filter(\.success).map(\.duration)
+        let averageLatencySeconds = successfulDurations.isEmpty
+            ? durationSeconds(failureLatencyPenalty)
+            : successfulDurations.map(durationSeconds).reduce(0, +) / Double(successfulDurations.count)
+
+        if failureRate >= KrevoConstants.concurrencyScaleDownFailureRate {
+            currentConcurrency = max(minConcurrency, currentConcurrency - 1)
+            return
+        }
+
+        guard failureRate <= KrevoConstants.concurrencyScaleUpFailureRate else { return }
+        if averageLatencySeconds <= KrevoConstants.targetChunkLatencySeconds {
+            currentConcurrency = min(maxConcurrency, currentConcurrency + 1)
+        }
+    }
+
+    private func classifyError(_ error: Error) -> ChunkFailure {
+        if let apiError = error as? KrevoAPIError {
+            switch apiError {
+            case .unauthorized, .quotaExceeded, .uploadExpired, .fileTooLarge:
+                return .terminal
+            case .rateLimited, .stalePresignedURL, .serverError, .networkError:
+                return .retryable
+            }
+        }
+        return .retryable
+    }
+
+    private enum ChunkFailure: Sendable {
+        case terminal
+        case retryable
+
+        var isTerminal: Bool {
+            self == .terminal
+        }
+    }
+}
+
 /// Thread-safe presigned URL cache for a single upload.
 /// Each upload gets its own instance so concurrent uploads never interfere.
 /// URL resolution serializes only within this cache — not on the UploadEngine actor.
@@ -9,7 +119,7 @@ import os
 /// Includes predictive prefetching: when resolved part numbers exceed 75% of the
 /// cached high-water mark, a background batch refresh is kicked off so URLs are
 /// ready before the upload tasks need them.
-private actor PresignedURLCache {
+    private actor PresignedURLCache {
     private struct CachedURL {
         let url: URL
         let fetchedAt: ContinuousClock.Instant
@@ -23,6 +133,7 @@ private actor PresignedURLCache {
 
     /// Max age before a URL is considered near-expiry and evicted.
     private let maxAge: Duration
+    private let prefetchTriggerRatio: Double
 
     /// Tracks an in-flight refresh so concurrent cache misses coalesce into one request.
     private var inflightRefresh: Task<Void, any Error>?
@@ -36,6 +147,7 @@ private actor PresignedURLCache {
         key: String,
         totalChunks: Int,
         initial: [PresignedURL],
+        prefetchTriggerRatio: Double,
         apiClient: KrevoAPIClient
     ) {
         self.uploadId = uploadId
@@ -43,6 +155,7 @@ private actor PresignedURLCache {
         self.totalChunks = totalChunks
         self.apiClient = apiClient
         self.maxAge = .seconds(KrevoConstants.presignedURLExpiry - KrevoConstants.presignedURLSafetyMargin)
+        self.prefetchTriggerRatio = max(0.05, min(0.99, prefetchTriggerRatio))
 
         let now = ContinuousClock.now
         var map: [Int: CachedURL] = [:]
@@ -167,7 +280,7 @@ private actor PresignedURLCache {
 
         // Only prefetch if we're past the 75% mark and there are more chunks
         guard cacheHighPart < totalChunks else { return }
-        guard currentPart > Int(Double(cacheHighPart) * 0.75) else { return }
+        guard currentPart > Int(Double(cacheHighPart) * prefetchTriggerRatio) else { return }
         guard prefetchTask == nil else { return } // Already prefetching
 
         let start = cacheHighPart + 1
@@ -321,6 +434,10 @@ actor UploadEngine {
                 key: initResponse.key,
                 totalChunks: totalChunks,
                 initial: initResponse.presignedUrls,
+                prefetchTriggerRatio: min(
+                    0.9,
+                    0.5 + (0.03 * Double(await chunkConcurrencyController.currentConcurrency()))
+                ),
                 apiClient: apiClient
             )
 
@@ -333,10 +450,18 @@ actor UploadEngine {
                 return idx
             }
 
-            // 5. Compute adaptive concurrency
-            let concurrency = min(
+            // 5. Configure adaptive chunk concurrency based on memory budget and runtime signals.
+            let concurrencyLimit = min(
                 KrevoConstants.maxConcurrentChunks,
                 max(1, KrevoConstants.maxMemoryBudget / initResponse.chunkSize)
+            )
+            let chunkConcurrencyController = ChunkConcurrencyController(
+                minConcurrency: min(KrevoConstants.minConcurrentChunks, concurrencyLimit),
+                maxConcurrency: concurrencyLimit,
+                initialConcurrency: min(
+                    max(1, concurrencyLimit / 2),
+                    concurrencyLimit
+                )
             )
 
             // 6. Progress throttle — shared across all chunk progress callbacks for this upload.
@@ -401,8 +526,9 @@ actor UploadEngine {
                 partNumber: Int,
                 chunkUploader: ChunkUploader,
                 task: UploadTask
-            ) async throws -> CompletedPart {
+            ) async throws -> CompletedChunkResult {
                 try Task.checkCancellation()
+                let startedAt = ContinuousClock.now
                 let chunkData = try reader.readChunk(at: idx)
                 let chunkSizeBytes = Int64(chunkData.count)
                 let maxPresignedURLRefreshAttempts = 2
@@ -450,9 +576,17 @@ actor UploadEngine {
                             )
                         }
 
-                        return CompletedPart(etag: etag, partNumber: partNumber)
+                        let duration = ContinuousClock.now - startedAt
+                        await chunkConcurrencyController.reportChunkSuccess(duration: duration)
+
+                        return CompletedChunkResult(
+                            part: CompletedPart(etag: etag, partNumber: partNumber),
+                            chunkSize: chunkSizeBytes,
+                            duration: duration
+                        )
                     } catch KrevoAPIError.stalePresignedURL {
                         guard refreshAttempts < maxPresignedURLRefreshAttempts else {
+                            await chunkConcurrencyController.reportChunkFailure(error: KrevoAPIError.stalePresignedURL)
                             throw KrevoAPIError.stalePresignedURL
                         }
 
@@ -466,6 +600,9 @@ actor UploadEngine {
                         KrevoConstants.uploadLogger.warning(
                             "Chunk \(partNumber) presigned URL became invalid. Refreshing URL (\(refreshAttempts)/\(maxPresignedURLRefreshAttempts))"
                         )
+                    } catch {
+                        await chunkConcurrencyController.reportChunkFailure(error: error)
+                        throw error
                     }
                 }
             }
@@ -473,15 +610,15 @@ actor UploadEngine {
             // 7. Pre-upload integrity check
             try reader.validateIntegrity()
 
-            // 8. Upload chunks with TaskGroup (limited concurrency)
-            var completedParts: [CompletedPart] = []
+            // 8. Upload chunks with TaskGroup (adaptive concurrency)
+            var completedParts: [CompletedChunkResult] = []
+            var inFlightChunkCount = 0
 
-            try await withThrowingTaskGroup(of: CompletedPart.self) { group in
-                // Seed initial concurrent tasks
-                let seedCount = min(concurrency, totalChunks)
-                for _ in 0..<seedCount {
-                    guard let idx = claimNextChunk() else { break }
+            try await withThrowingTaskGroup(of: CompletedChunkResult.self) { group in
+                func addNextChunk() -> Bool {
+                    guard let idx = claimNextChunk() else { return false }
                     let partNumber = idx + 1 // R2 parts are 1-indexed
+                    inFlightChunkCount += 1
 
                     group.addTask { [chunkUploader] in
                         try await uploadChunk(
@@ -491,11 +628,19 @@ actor UploadEngine {
                             task: task
                         )
                     }
+                    return true
+                }
+
+                // Seed initial concurrent tasks
+                let seedCount = min(await chunkConcurrencyController.currentConcurrency(), totalChunks)
+                for _ in 0..<seedCount {
+                    guard addNextChunk() else { break }
                 }
 
                 // As each task completes, enqueue the next chunk
-                for try await part in group {
-                    completedParts.append(part)
+                for try await chunkResult in group {
+                    completedParts.append(chunkResult)
+                    inFlightChunkCount -= 1
 
                     // Chunk-completion progress: always update on first and last,
                     // throttled otherwise (the per-byte callbacks handle intermediate updates)
@@ -524,17 +669,10 @@ actor UploadEngine {
                         }
                     }
 
-                    // Add next chunk if available
-                    if let idx = claimNextChunk() {
-                        let partNumber = idx + 1
-
-                        group.addTask { [chunkUploader] in
-                            try await uploadChunk(
-                                idx: idx,
-                                partNumber: partNumber,
-                                chunkUploader: chunkUploader,
-                                task: task
-                            )
+                    // Add next chunks up to the current adaptive limit.
+                    while inFlightChunkCount < await chunkConcurrencyController.currentConcurrency() {
+                        if !addNextChunk() {
+                            break
                         }
                     }
                 }
@@ -548,7 +686,9 @@ actor UploadEngine {
             // 9. Complete upload
             await MainActor.run { task.state = .completing }
 
-            let sortedParts = completedParts.sorted { $0.partNumber < $1.partNumber }
+            let sortedParts = completedParts
+                .map(\.part)
+                .sorted { $0.partNumber < $1.partNumber }
             let completeResponse = try await apiClient.completeUpload(
                 uploadId: initResponse.uploadId,
                 key: initResponse.key,
