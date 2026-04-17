@@ -4,6 +4,9 @@ CLAUDE.md
 xcuserdata/
 DerivedData/
 build/
+build-temp/
+build-temp-release/
+builds/
 *.ipa
 *.dSYM.zip
 *.dSYM
