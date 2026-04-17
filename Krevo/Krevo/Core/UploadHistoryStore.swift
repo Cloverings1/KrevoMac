@@ -3,13 +3,64 @@ import os
 
 // MARK: - Persisted entry
 
+enum HistoryResult: String, Codable, Sendable {
+    case completed
+    case failed
+    case cancelled
+}
+
 struct HistoryEntry: Codable, Sendable, Identifiable {
     let id: UUID
     let fileName: String
     let fileSize: Int64
     let shareURL: String?
     let completionTime: Date
-    let fileId: String
+    let fileId: String?
+    let result: HistoryResult
+    let message: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case fileName
+        case fileSize
+        case shareURL
+        case completionTime
+        case fileId
+        case result
+        case message
+    }
+
+    init(
+        id: UUID,
+        fileName: String,
+        fileSize: Int64,
+        shareURL: String?,
+        completionTime: Date,
+        fileId: String?,
+        result: HistoryResult,
+        message: String?
+    ) {
+        self.id = id
+        self.fileName = fileName
+        self.fileSize = fileSize
+        self.shareURL = shareURL
+        self.completionTime = completionTime
+        self.fileId = fileId
+        self.result = result
+        self.message = message
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        fileName = try container.decode(String.self, forKey: .fileName)
+        fileSize = try container.decode(Int64.self, forKey: .fileSize)
+        shareURL = try container.decodeIfPresent(String.self, forKey: .shareURL)
+        completionTime = try container.decode(Date.self, forKey: .completionTime)
+        fileId = try container.decodeIfPresent(String.self, forKey: .fileId)
+        result = try container.decodeIfPresent(HistoryResult.self, forKey: .result) ?? .completed
+        message = try container.decodeIfPresent(String.self, forKey: .message)
+    }
 }
 
 // MARK: - Actor — owns all disk I/O for upload history
@@ -41,10 +92,17 @@ actor UploadHistoryStore {
     /// Append a new entry and persist. Trims oldest entries beyond maxHistoryCount.
     func append(_ entry: HistoryEntry) {
         var entries = load()
+        entries.removeAll { $0.id == entry.id }
         entries.insert(entry, at: 0)
         if entries.count > KrevoConstants.maxHistoryCount {
             entries = Array(entries.prefix(KrevoConstants.maxHistoryCount))
         }
+        write(entries)
+    }
+
+    func remove(ids: Set<UUID>) {
+        guard !ids.isEmpty else { return }
+        let entries = load().filter { !ids.contains($0.id) }
         write(entries)
     }
 

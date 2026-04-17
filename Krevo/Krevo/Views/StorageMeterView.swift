@@ -4,8 +4,7 @@ struct StorageMeterView: View {
     @Environment(AppState.self) private var appState
 
     var body: some View {
-        VStack(spacing: 6) {
-            // Progress bar
+        VStack(alignment: .leading, spacing: 8) {
             GeometryReader { geo in
                 ZStack(alignment: .leading) {
                     RoundedRectangle(cornerRadius: 2)
@@ -19,7 +18,6 @@ struct StorageMeterView: View {
             }
             .frame(height: 4)
 
-            // Labels
             HStack {
                 Text(appState.storageLoaded ? storageText : "Loading...")
                     .font(.system(size: 12))
@@ -31,9 +29,31 @@ struct StorageMeterView: View {
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(Color.krevoSecondary)
             }
+
+            HStack(spacing: 8) {
+                Text(remainingText)
+                Spacer(minLength: 8)
+
+                if let maxFileText {
+                    Text(maxFileText)
+                }
+            }
+            .font(.system(size: 11))
+            .foregroundStyle(Color.krevoTertiary)
+
+            if let statusLine {
+                HStack(spacing: 6) {
+                    Image(systemName: statusLine.icon)
+                        .font(.system(size: 10, weight: .semibold))
+                    Text(statusLine.text)
+                        .lineLimit(2)
+                }
+                .font(.system(size: 10))
+                .foregroundStyle(statusLine.color)
+            }
         }
         .redacted(reason: appState.storageLoaded ? [] : .placeholder)
-        .accessibilityLabel(appState.storageLoaded ? "Storage: \(storageText)" : "Storage loading")
+        .accessibilityLabel(accessibilityLabel)
     }
 
     // MARK: - Computed
@@ -46,6 +66,40 @@ struct StorageMeterView: View {
 
     private var tierLabel: String {
         appState.tier.isEmpty ? "" : appState.tier.capitalized
+    }
+
+    private var remainingText: String {
+        "Available \(AppState.formatBytes(appState.remainingStorage))"
+    }
+
+    private var maxFileText: String? {
+        guard appState.maxFileSize > 0 else { return nil }
+        return "Max file \(AppState.formatBytes(appState.maxFileSize))"
+    }
+
+    private var statusLine: (icon: String, text: String, color: Color)? {
+        if let error = appState.storageErrorMessage {
+            return ("exclamationmark.triangle.fill", error, .krevoAmber)
+        }
+
+        if appState.storageLoaded && appState.isStorageStale {
+            return ("arrow.clockwise", "Storage info is older than 5 minutes.", .krevoTertiary)
+        }
+
+        return nil
+    }
+
+    private var accessibilityLabel: String {
+        guard appState.storageLoaded else { return "Storage loading" }
+
+        var parts = [storageText, remainingText]
+        if let maxFileText {
+            parts.append(maxFileText)
+        }
+        if let statusLine {
+            parts.append(statusLine.text)
+        }
+        return "Storage: \(parts.joined(separator: ", "))"
     }
 
     private var barGradient: LinearGradient {

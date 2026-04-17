@@ -160,10 +160,10 @@ struct UploadProgressView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Upload failed")
                     .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(Color(hex: "EF4444").opacity(0.95))
-                Text(message)
+                    .foregroundStyle(Color.krevoRed.opacity(0.95))
+                Text(UploadTask.userFriendlyMessage(message))
                     .font(.system(size: 11))
-                    .foregroundStyle(Color(hex: "EF4444").opacity(0.8))
+                    .foregroundStyle(Color.krevoRed.opacity(0.8))
                     .lineLimit(2)
             }
 
@@ -238,6 +238,7 @@ struct RecentCompletedRow: View {
     let task: UploadTask
 
     @State private var now = Date()
+    @State private var showCopied = false
 
     var body: some View {
         HStack(spacing: 8) {
@@ -254,18 +255,29 @@ struct RecentCompletedRow: View {
             Spacer()
 
             if task.shareURL != nil {
-                Button {
-                    if let url = task.shareURL {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(url, forType: .string)
-                    }
-                } label: {
-                    Image(systemName: "link")
+                if showCopied {
+                    Text("Copied!")
                         .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(Color.krevoViolet)
+                        .foregroundStyle(Color(hex: "22C55E"))
+                } else {
+                    Button {
+                        if let url = task.shareURL {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(url, forType: .string)
+                            showCopied = true
+                            Task {
+                                try? await Task.sleep(for: .seconds(1.5))
+                                showCopied = false
+                            }
+                        }
+                    } label: {
+                        Image(systemName: "link")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(Color.krevoViolet)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Copy share link")
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Copy share link")
             }
 
             if let displayTime = task.completionTime ?? task.startTime {

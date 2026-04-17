@@ -23,7 +23,7 @@ extension Color {
 
     static let krevoPrimary = Color(hex: "FAFAFA")
     static let krevoSecondary = Color(hex: "A1A1AA")
-    static let krevoTertiary = Color(hex: "71717A")
+    static let krevoTertiary = Color(hex: "8E8E93")
 
     static let krevoViolet = Color(hex: "8B5CF6")
     static let krevoFuchsia = Color(hex: "D946EF")

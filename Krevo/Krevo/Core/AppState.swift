@@ -20,6 +20,8 @@ final class AppState {
 
     var isAuthenticated = false
     var isCheckingAuth = true
+    var hasStoredSession = false
+    var authMessage: String?
     private var hasInitialized = false
 
     // MARK: - Storage
@@ -30,13 +32,8 @@ final class AppState {
     var tier: String = ""
     var plan: String = ""
     var storageLoaded = false
+    var storageErrorMessage: String?
     var userName: String = ""
-
-    // MARK: - Weather
-
-    let weatherService = WeatherService()
-    var weather: WeatherData?
-    private var weatherRefreshTask: Task<Void, Never>?
 
     // MARK: - Network
 
@@ -53,11 +50,10 @@ final class AppState {
     private var runningCount = 0
     private var isDraining = false
 
-    // Cached for menu bar icon — avoids re-filtering on every SwiftUI pass
-    var hasActiveUploads = false
+    var hasActiveUploads: Bool { !activeUploads.isEmpty }
 
     // Storage refresh debounce
-    private var lastStorageRefresh: Date?
+    private var storageRefreshDebounceTime: Date?
     private var storageLastRefreshed: Date?
 
     // Completion banner
@@ -88,9 +84,15 @@ final class AppState {
         hasInitialized = true
         startNetworkMonitor()
         let entries = await historyStore.load()
-        recentCompleted = entries.map { UploadTask(historyEntry: $0) }
+        recentCompleted = entries.compactMap { entry in
+            guard entry.result == .completed else { return nil }
+            return UploadTask(historyEntry: entry)
+        }
+        uploadTasks = entries.compactMap { entry in
+            guard entry.result != .completed else { return nil }
+            return UploadTask(historyEntry: entry)
+        }
         await checkAuth()
-        startWeatherRefresh()
         await checkServerStatus()
     }
 
@@ -105,21 +107,6 @@ final class AppState {
             }
         } catch {
             // Silent — server may not have this endpoint yet
-        }
-    }
-
-    private func startWeatherRefresh() {
-        weatherRefreshTask = Task {
-            while !Task.isCancelled {
-                await refreshWeather()
-                try? await Task.sleep(for: .seconds(900)) // 15 minutes
-            }
-        }
-    }
-
-    func refreshWeather() async {
-        if let data = try? await weatherService.fetch() {
-            weather = data
         }
     }
 
@@ -147,10 +134,20 @@ final class AppState {
     // MARK: - Computed
 
     var activeUploads: [UploadTask] { uploadTasks.filter { $0.state.isActive } }
+    var reservedUploadBytes: Int64 {
+        uploadTasks.reduce(into: 0) { partial, task in
+            guard !task.state.isTerminal else { return }
+            partial += task.fileSize
+        }
+    }
 
     var storagePercent: Double {
         guard storageLimit > 0 else { return 0 }
         return Double(storageUsed) / Double(storageLimit)
+    }
+
+    var remainingStorage: Int64 {
+        max(0, storageLimit - storageUsed - reservedUploadBytes)
     }
 
     // MARK: - Auth Actions
@@ -161,35 +158,50 @@ final class AppState {
 
         guard let token = KeychainService.loadToken() else {
             isAuthenticated = false
+            hasStoredSession = false
+            authMessage = nil
             return
         }
 
+        hasStoredSession = true
+        authMessage = nil
         await apiClient.setToken(token)
 
         do {
             let info = try await apiClient.validateToken()
             applyStorageInfo(info)
             isAuthenticated = true
+            authMessage = nil
             if case .authRequired = globalBanner {
                 globalBanner = nil
             }
-        } catch {
-            // Token is invalid or expired — clear it
+        } catch let apiError as KrevoAPIError {
             isAuthenticated = false
-            await apiClient.clearToken()
-            KeychainService.deleteToken()
-            globalBanner = .authRequired
+            switch apiError {
+            case .unauthorized:
+                await apiClient.clearToken()
+                KeychainService.deleteToken()
+                hasStoredSession = false
+                authMessage = "Your saved session expired. Connect your account again."
+                globalBanner = .authRequired
+            default:
+                authMessage = authFailureMessage(for: apiError)
+            }
+        } catch {
+            isAuthenticated = false
+            authMessage = authFailureMessage(for: error)
         }
     }
 
     func signIn(token: String) async {
+        authMessage = nil
         do {
             try KeychainService.save(token: token)
         } catch {
             KrevoConstants.authLogger.error("Keychain save failed: \(error.localizedDescription)")
-            // Surface the error so the user knows sign-in didn't persist
             isAuthenticated = false
-            isCheckingAuth = false
+            hasStoredSession = false
+            authMessage = "Could not save your session locally. Check Keychain access and retry."
             return
         }
         await apiClient.setToken(token)
@@ -215,15 +227,14 @@ final class AppState {
         tier = ""
         plan = ""
         userName = ""
-        weather = nil
-        weatherRefreshTask?.cancel()
-        weatherRefreshTask = nil
+        storageErrorMessage = nil
+        hasStoredSession = false
+        authMessage = nil
         uploadTasks.removeAll()
         recentCompleted.removeAll()
         Task { await historyStore.clear() }
         pendingQueue.removeAll()
         runningCount = 0
-        hasActiveUploads = false
         showCompletionBanner = false
         bannerDismissTask?.cancel()
         bannerDismissTask = nil
@@ -232,11 +243,13 @@ final class AppState {
 
     // MARK: - Storage
 
-    func refreshStorage() async {
+    @discardableResult
+    func refreshStorage() async -> Bool {
         do {
             let info = try await apiClient.getStorageInfo()
             applyStorageInfo(info)
             storageLastRefreshed = Date()
+            storageErrorMessage = nil
         } catch {
             KrevoConstants.logger.error("Storage refresh failed: \(error.localizedDescription)")
 
@@ -246,13 +259,18 @@ final class AppState {
                 let info = try await apiClient.getStorageInfo()
                 applyStorageInfo(info)
                 storageLastRefreshed = Date()
+                storageErrorMessage = nil
             } catch {
                 KrevoConstants.logger.error("Storage refresh retry failed: \(error.localizedDescription)")
+                storageErrorMessage = "Storage info is temporarily unavailable."
+                await checkServerStatus()
+                return false
             }
         }
 
         // Piggyback: check for server announcements
         await checkServerStatus()
+        return true
     }
 
     var isStorageStale: Bool {
@@ -263,46 +281,66 @@ final class AppState {
     // MARK: - Uploads
 
     func startUpload(urls: [URL]) {
-        if isStorageStale {
-            KrevoConstants.logger.warning("Storage info is stale — quota check may be inaccurate")
+        guard !urls.isEmpty else { return }
+
+        Task { @MainActor in
+            if isStorageStale {
+                KrevoConstants.logger.warning("Storage info is stale — refreshing before preflight")
+                _ = await refreshStorage()
+            }
+
+            let expanded = expandURLs(urls)
+            var remaining = storageLimit > 0 ? max(0, storageLimit - storageUsed - reservedUploadBytes) : Int64.max
+
+            for file in expanded {
+                let task: UploadTask
+
+                do {
+                    task = try UploadTask(fileURL: file.url, relativePath: file.relativePath)
+                } catch {
+                    let failed = UploadTask(
+                        failedURL: file.url,
+                        message: "Could not read file: \(error.localizedDescription)",
+                        relativePath: file.relativePath
+                    )
+                    uploadTasks.insert(failed, at: 0)
+                    continue
+                }
+
+                if maxFileSize > 0, task.fileSize > maxFileSize {
+                    let limit = AppState.formatBytes(maxFileSize)
+                    task.state = .failed("File exceeds the \(limit) limit for your plan.")
+                    globalBanner = .quotaIssue("A file exceeds your current plan's file size limit.")
+                    uploadTasks.insert(task, at: 0)
+                    continue
+                }
+
+                if storageLimit > 0, task.fileSize > remaining {
+                    task.state = .failed("Not enough storage space. Upgrade your plan for more space.")
+                    globalBanner = .quotaIssue("You do not have enough available storage for this upload.")
+                    uploadTasks.insert(task, at: 0)
+                    continue
+                }
+
+                uploadTasks.insert(task, at: 0)
+                pendingQueue.append(task)
+                if storageLimit > 0 {
+                    remaining = max(0, remaining - task.fileSize)
+                }
+            }
+
+            drainQueue()
         }
-
-        let expanded = expandURLs(urls)
-
-        for file in expanded {
-            let task: UploadTask
-
-            do {
-                task = try UploadTask(fileURL: file.url, relativePath: file.relativePath)
-            } catch {
-                let failed = UploadTask(failedURL: file.url, message: "Could not read file: \(error.localizedDescription)", relativePath: file.relativePath)
-                uploadTasks.insert(failed, at: 0)
-                continue
-            }
-
-            uploadTasks.insert(task, at: 0)
-
-            // Pre-flight: file size checks against plan limits
-            if maxFileSize > 0, task.fileSize > maxFileSize {
-                let limit = AppState.formatBytes(maxFileSize)
-                task.state = .failed("File exceeds the \(limit) limit for your plan.")
-                globalBanner = .quotaIssue("A file exceeds your current plan's file size limit.")
-                continue
-            }
-            let remaining = storageLimit - storageUsed
-            if storageLimit > 0, task.fileSize > remaining {
-                task.state = .failed("Not enough storage space. Upgrade your plan for more space.")
-                globalBanner = .quotaIssue("You do not have enough available storage for this upload.")
-                continue
-            }
-
-            pendingQueue.append(task)
-        }
-
-        drainQueue()
     }
 
     func cancelUpload(_ task: UploadTask) {
+        if let pendingIndex = pendingQueue.firstIndex(where: { $0.id == task.id }) {
+            pendingQueue.remove(at: pendingIndex)
+            task.markCancelled()
+            handleUploadCompletion(task)
+            return
+        }
+
         Task {
             await uploadEngine.cancelUpload(
                 taskId: task.id,
@@ -321,7 +359,20 @@ final class AppState {
     }
 
     func clearCompleted() {
+        let clearedIssueIDs = Set(uploadTasks.compactMap { task -> UUID? in
+            switch task.state {
+            case .failed, .cancelled:
+                return task.id
+            default:
+                return nil
+            }
+        })
+
         uploadTasks.removeAll { $0.state.isTerminal }
+
+        if !clearedIssueIDs.isEmpty {
+            Task { await historyStore.remove(ids: clearedIssueIDs) }
+        }
     }
 
     /// Abort all active uploads — used on app termination.
@@ -335,7 +386,6 @@ final class AppState {
                 size: task.fileSize
             )
         }
-        hasActiveUploads = false
     }
 
     // MARK: - Formatting
@@ -415,40 +465,28 @@ final class AppState {
               let task = pendingQueue.first {
             pendingQueue.removeFirst()
             runningCount += 1
-            hasActiveUploads = true
 
             Task {
                 await uploadEngine.uploadFile(task: task)
                 handleUploadCompletion(task)
                 runningCount -= 1
-                hasActiveUploads = runningCount > 0 || !pendingQueue.isEmpty
                 drainQueue()
             }
         }
     }
 
     private func handleUploadCompletion(_ task: UploadTask) {
-        if case .completed = task.state {
+        guard task.state.isTerminal else { return }
+
+        switch task.state {
+        case .completed:
             KrevoConstants.uploadLogger.info("Upload completed: \(task.fileName) (\(AppState.formatBytes(task.fileSize)))")
-            // Add to recent, keep last N and persist
+            recentCompleted.removeAll { $0.id == task.id }
             recentCompleted.insert(task, at: 0)
             if recentCompleted.count > KrevoConstants.maxHistoryCount {
                 recentCompleted = Array(recentCompleted.prefix(KrevoConstants.maxHistoryCount))
             }
 
-            if case .completed(let fileId) = task.state {
-                let entry = HistoryEntry(
-                    id: task.id,
-                    fileName: task.fileName,
-                    fileSize: task.fileSize,
-                    shareURL: task.shareURL,
-                    completionTime: task.completionTime ?? Date(),
-                    fileId: fileId
-                )
-                Task { await historyStore.append(entry) }
-            }
-
-            // Show completion banner with filename
             bannerGeneration &+= 1
             let currentGeneration = bannerGeneration
             completedFileName = task.fileName
@@ -469,25 +507,87 @@ final class AppState {
             // System notification (no sound)
             let content = UNMutableNotificationContent()
             content.title = "Upload complete"
-            content.body = "\(task.fileName) — \(AppState.formatBytes(task.fileSize))"
-            content.categoryIdentifier = "UPLOAD_COMPLETE"
-            if let shareURL = task.shareURL {
-                content.userInfo = ["shareURL": shareURL]
-            }
+            content.body = "\(task.fileName) - \(AppState.formatBytes(task.fileSize))"
             let notifRequest = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
             Task { try? await UNUserNotificationCenter.current().add(notifRequest) }
+        case .failed(let message):
+            KrevoConstants.uploadLogger.error("Upload failed: \(task.fileName) - \(message)")
+        case .cancelled:
+            KrevoConstants.uploadLogger.info("Upload cancelled: \(task.fileName)")
+        default:
+            break
+        }
 
-            // Debounced storage refresh — only fires once even if multiple uploads complete
-            // within the same 1-second window
-            let now = Date()
-            if lastStorageRefresh == nil || now.timeIntervalSince(lastStorageRefresh!) > 1.0 {
-                lastStorageRefresh = now
-                Task { await refreshStorage() }
-            }
+        if let entry = historyEntry(for: task) {
+            Task { await historyStore.append(entry) }
+        }
 
-            // Auto-prune terminal tasks older than 5 minutes
-            let cutoff = now.addingTimeInterval(-300)
-            uploadTasks.removeAll { $0.state.isTerminal && ($0.completionTime ?? .distantPast) < cutoff }
+        let now = Date()
+        if storageRefreshDebounceTime == nil || now.timeIntervalSince(storageRefreshDebounceTime!) > 1.0 {
+            storageRefreshDebounceTime = now
+            Task { await refreshStorage() }
+        }
+
+        let cutoff = now.addingTimeInterval(-300)
+        uploadTasks.removeAll { $0.state.isTerminal && ($0.completionTime ?? .distantPast) < cutoff }
+    }
+
+    private func authFailureMessage(for error: Error) -> String {
+        guard let apiError = error as? KrevoAPIError else {
+            return "Could not validate your saved session right now. Retry in a moment."
+        }
+
+        switch apiError {
+        case .networkError:
+            return "Could not reach Krevo right now. Check your connection and retry."
+        case .rateLimited(let retryAfter):
+            return "Krevo is busy right now. Retry in \(retryAfter) seconds."
+        case .serverError:
+            return "Krevo is temporarily unavailable. Retry in a moment."
+        default:
+            return "Could not validate your saved session right now. Retry in a moment."
+        }
+    }
+
+    private func historyEntry(for task: UploadTask) -> HistoryEntry? {
+        let completionTime = task.completionTime ?? Date()
+
+        switch task.state {
+        case .completed(let fileId):
+            return HistoryEntry(
+                id: task.id,
+                fileName: task.fileName,
+                fileSize: task.fileSize,
+                shareURL: nil,
+                completionTime: completionTime,
+                fileId: fileId,
+                result: .completed,
+                message: nil
+            )
+        case .failed(let message):
+            return HistoryEntry(
+                id: task.id,
+                fileName: task.fileName,
+                fileSize: task.fileSize,
+                shareURL: nil,
+                completionTime: completionTime,
+                fileId: nil,
+                result: .failed,
+                message: message
+            )
+        case .cancelled:
+            return HistoryEntry(
+                id: task.id,
+                fileName: task.fileName,
+                fileSize: task.fileSize,
+                shareURL: nil,
+                completionTime: completionTime,
+                fileId: nil,
+                result: .cancelled,
+                message: nil
+            )
+        default:
+            return nil
         }
     }
 }

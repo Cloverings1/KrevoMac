@@ -99,13 +99,45 @@ final class UploadTask: Identifiable {
         self.relativePath = nil
         self.fileName = entry.fileName
         self.fileSize = entry.fileSize
-        self.shareURL = entry.shareURL
+        self.shareURL = entry.shareURL ?? entry.fileId.map { "https://www.krevo.io/file/\($0)" }
         self.completionTime = entry.completionTime
-        self.state = .completed(fileId: entry.fileId)
+
+        switch entry.result {
+        case .completed:
+            let fileId = entry.fileId ?? entry.id.uuidString
+            self.uploadedBytes = entry.fileSize
+            self.progress = 1.0
+            self.state = .completed(fileId: fileId)
+        case .failed:
+            self.state = .failed(entry.message ?? "Upload failed")
+        case .cancelled:
+            self.state = .cancelled
+        }
+    }
+
+    /// Maps raw error messages to user-friendly descriptions.
+    static func userFriendlyMessage(_ raw: String) -> String {
+        let lowered = raw.lowercased()
+        if lowered.contains("timed out") || lowered.contains("timeout") {
+            return "Upload timed out \u{2014} check your connection and retry"
+        }
+        if lowered.contains("connection was lost") || lowered.contains("network connection") {
+            return "Connection lost during upload"
+        }
+        if lowered.contains("not connected to the internet") || lowered.contains("offline") {
+            return "No internet connection"
+        }
+        if lowered.contains("server error") || lowered.contains("500") || lowered.contains("internal server") {
+            return "Server error \u{2014} please retry"
+        }
+        if lowered.contains("could not connect") || lowered.contains("cannot connect") {
+            return "Could not reach server \u{2014} check your connection"
+        }
+        return raw
     }
 
     /// Update partial byte-level progress for an in-flight chunk.
-    /// Called from the `ChunkUploadDelegate`'s `didSendBodyData` callback (throttled).
+    /// Call once per part, then call `updateSpeed()` once after all parts in a batch.
     func updatePartialProgress(partNumber: Int, bytesSent: Int64) {
         let previous = inFlightPartialBytes[partNumber] ?? 0
         inFlightPartialBytes[partNumber] = bytesSent
@@ -115,8 +147,12 @@ final class UploadTask: Identifiable {
 
         uploadedBytes = clampedBytes
         progress = fileSize > 0 ? Double(clampedBytes) / Double(fileSize) : 1.0
+    }
 
-        // EWMA speed calculation
+    /// Compute speed from the accumulated byte progress since the last speed sample.
+    /// Call once per flush batch, after all `updatePartialProgress` calls.
+    func updateSpeed() {
+        let clampedBytes = uploadedBytes
         let now = Date()
         speedSampleCount += 1
 

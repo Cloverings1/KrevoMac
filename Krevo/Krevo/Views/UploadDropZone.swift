@@ -87,6 +87,8 @@ struct UploadDropZone: View {
                 appState.startUpload(urls: urls)
             } else if !providers.isEmpty {
                 KrevoConstants.uploadLogger.warning("Drop resolved no valid file URLs from \(providers.count) provider(s)")
+                let failed = UploadTask(failedURL: URL(filePath: "dropped items"), message: "Dropped items could not be read as files")
+                appState.uploadTasks.insert(failed, at: 0)
             }
         }
     }

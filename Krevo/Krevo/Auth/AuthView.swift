@@ -2,7 +2,7 @@ import SwiftUI
 
 struct AuthView: View {
     @Environment(AppState.self) private var appState
-    @State private var authManager = AuthManager()
+    @State private var authManager = AuthManager.shared
 
     var body: some View {
         VStack(spacing: 0) {
@@ -26,17 +26,23 @@ struct AuthView: View {
                     .tint(Color(hex: "8B5CF6"))
                     .frame(height: 36)
             } else {
-                KrevoButton(title: "Connect Account", style: .primary) {
-                    Task {
-                        if let token = await authManager.signIn() {
-                            await appState.signIn(token: token)
+                KrevoButton(title: primaryButtonTitle, style: .primary) {
+                    if shouldRetryStoredSession {
+                        Task {
+                            await appState.checkAuth()
+                        }
+                    } else {
+                        Task {
+                            if let token = await authManager.signIn() {
+                                await appState.signIn(token: token)
+                            }
                         }
                     }
                 }
                 .frame(maxWidth: 200)
             }
 
-            if let error = authManager.error {
+            if let error = authManager.error ?? appState.authMessage {
                 Text(error)
                     .font(.system(size: 12))
                     .foregroundStyle(.red.opacity(0.9))
@@ -54,5 +60,13 @@ struct AuthView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.black)
+    }
+
+    private var shouldRetryStoredSession: Bool {
+        appState.hasStoredSession && appState.authMessage != nil && !appState.isAuthenticated
+    }
+
+    private var primaryButtonTitle: String {
+        shouldRetryStoredSession ? "Retry Connection" : "Connect Account"
     }
 }

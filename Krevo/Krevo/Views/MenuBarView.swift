@@ -3,6 +3,8 @@ import SwiftUI
 struct MenuBarView: View {
     @Environment(AppState.self) private var appState
     @State private var appeared = false
+    @State private var isSigningOut = false
+    @State private var showCopiedBanner = false
 
     var body: some View {
         Group {
@@ -51,7 +53,7 @@ struct MenuBarView: View {
 
             ScrollView {
                 LazyVStack(spacing: 0) {
-                    // Greeting + weather
+                    // Greeting
                     greetingRow
                         .padding(.horizontal, 16)
                         .padding(.top, 14)
@@ -120,27 +122,23 @@ struct MenuBarView: View {
         }
     }
 
-    // MARK: - Greeting + Weather
+    // MARK: - Greeting
 
     private var greetingRow: some View {
         HStack(alignment: .center) {
-            Text("Welcome")
+            Text(greetingText)
                 .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(Color.krevoPrimary)
 
             Spacer()
-
-            if let weather = appState.weather {
-                HStack(spacing: 4) {
-                    Image(systemName: weather.icon)
-                        .font(.system(size: 12))
-                        .foregroundStyle(Color.krevoSecondary)
-                    Text("\(weather.temperature)°F")
-                        .font(.system(size: 13, weight: .medium).monospacedDigit())
-                        .foregroundStyle(Color.krevoSecondary)
-                }
-            }
         }
+    }
+
+    private var greetingText: String {
+        if let firstName = appState.userName.split(separator: " ").first, !firstName.isEmpty {
+            return "Welcome, \(firstName)"
+        }
+        return "Welcome"
     }
 
     // MARK: - Active Uploads
@@ -303,9 +301,9 @@ struct MenuBarView: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
 
-            Text("uploaded")
+            Text(showCopiedBanner ? "Link copied!" : "uploaded")
                 .font(.system(size: 11))
-                .foregroundStyle(Color.krevoTertiary)
+                .foregroundStyle(showCopiedBanner ? Color(hex: "22C55E") : Color.krevoTertiary)
 
             Spacer()
         }
@@ -323,8 +321,15 @@ struct MenuBarView: View {
             if let url = appState.completedShareURL {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(url, forType: .string)
+                showCopiedBanner = true
+                Task {
+                    try? await Task.sleep(for: .seconds(1.5))
+                    appState.showCompletionBanner = false
+                    showCopiedBanner = false
+                }
+            } else {
+                appState.showCompletionBanner = false
             }
-            appState.showCompletionBanner = false
         }
     }
 
@@ -338,12 +343,22 @@ struct MenuBarView: View {
 
             Spacer()
 
-            Button("Sign Out") {
-                Task { await appState.signOut() }
+            if isSigningOut {
+                ProgressView()
+                    .controlSize(.mini)
+                    .tint(Color.krevoTertiary)
+            } else {
+                Button("Sign Out") {
+                    isSigningOut = true
+                    Task {
+                        await appState.signOut()
+                        isSigningOut = false
+                    }
+                }
+                .font(.system(size: 12))
+                .foregroundStyle(Color.krevoTertiary)
+                .buttonStyle(.plain)
             }
-            .font(.system(size: 12))
-            .foregroundStyle(Color.krevoTertiary)
-            .buttonStyle(.plain)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)

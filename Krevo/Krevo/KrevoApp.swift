@@ -59,15 +59,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         center.delegate = self
         center.requestAuthorization(options: [.alert, .badge]) { _, _ in }
 
-        // Register "Copy Link" action for upload-complete notifications
-        let copyAction = UNNotificationAction(identifier: "COPY_LINK", title: "Copy Link", options: [])
-        let uploadCategory = UNNotificationCategory(
-            identifier: "UPLOAD_COMPLETE",
-            actions: [copyAction],
-            intentIdentifiers: []
-        )
-        center.setNotificationCategories([uploadCategory])
-
         // Run the one-time auth check at app launch
         Task { @MainActor in
             await AppState.shared.initialize()
@@ -83,33 +74,17 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         [.banner]
     }
 
-    func userNotificationCenter(
-        _ center: UNUserNotificationCenter,
-        didReceive response: UNNotificationResponse
-    ) async {
-        if response.actionIdentifier == "COPY_LINK",
-           let url = response.notification.request.content.userInfo["shareURL"] as? String {
-            await MainActor.run {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(url, forType: .string)
-            }
-        }
-    }
-
     // MARK: - URL Scheme
 
     @objc private func handleGetURL(_ event: NSAppleEventDescriptor, withReplyEvent replyEvent: NSAppleEventDescriptor) {
         guard let urlString = event.paramDescriptor(forKeyword: AEKeyword(keyDirectObject))?.stringValue,
               let url = URL(string: urlString),
               url.scheme == KrevoConstants.urlScheme,
-              url.host == "auth",
-              let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
-              let token = components.queryItems?.first(where: { $0.name == "token" })?.value
+              url.host == "auth"
         else { return }
 
-        // AppState.shared is always available — no optional chaining needed
         Task { @MainActor in
-            await AppState.shared.signIn(token: token)
+            _ = AuthManager.shared.handleCallbackURL(url)
         }
     }
 }
