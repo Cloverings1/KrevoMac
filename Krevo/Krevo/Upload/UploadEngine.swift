@@ -35,7 +35,7 @@ private actor ChunkConcurrencyController {
         self.failureLatencyPenalty = .seconds(KrevoConstants.chunkFailureLatencyPenaltySeconds)
     }
 
-    func currentConcurrency() -> Int {
+    func snapshotConcurrency() -> Int {
         currentConcurrency
     }
 
@@ -428,29 +428,7 @@ actor UploadEngine {
                 task.startTime = Date()
             }
 
-            // 3. Per-upload presigned URL cache (dedicated actor — no serialization on UploadEngine)
-            let urlCache = PresignedURLCache(
-                uploadId: initResponse.uploadId,
-                key: initResponse.key,
-                totalChunks: totalChunks,
-                initial: initResponse.presignedUrls,
-                prefetchTriggerRatio: min(
-                    0.9,
-                    0.5 + (0.03 * Double(await chunkConcurrencyController.currentConcurrency()))
-                ),
-                apiClient: apiClient
-            )
-
-            // 4. Per-upload chunk index — local to this function, protected by UploadEngine actor
-            var nextChunkIndex = 0
-            func claimNextChunk() -> Int? {
-                guard nextChunkIndex < totalChunks else { return nil }
-                let idx = nextChunkIndex
-                nextChunkIndex += 1
-                return idx
-            }
-
-            // 5. Configure adaptive chunk concurrency based on memory budget and runtime signals.
+            // 3. Configure adaptive chunk concurrency based on memory budget and runtime signals.
             let concurrencyLimit = min(
                 KrevoConstants.maxConcurrentChunks,
                 max(1, KrevoConstants.maxMemoryBudget / initResponse.chunkSize)
@@ -463,6 +441,29 @@ actor UploadEngine {
                     concurrencyLimit
                 )
             )
+
+            // 4. Per-upload presigned URL cache (dedicated actor — no serialization on UploadEngine)
+            let initialConcurrency = await chunkConcurrencyController.snapshotConcurrency()
+            let urlCache = PresignedURLCache(
+                uploadId: initResponse.uploadId,
+                key: initResponse.key,
+                totalChunks: totalChunks,
+                initial: initResponse.presignedUrls,
+                prefetchTriggerRatio: min(
+                    0.9,
+                    0.5 + (0.03 * Double(initialConcurrency))
+                ),
+                apiClient: apiClient
+            )
+
+            // 5. Per-upload chunk index — local to this function, protected by UploadEngine actor
+            var nextChunkIndex = 0
+            func claimNextChunk() -> Int? {
+                guard nextChunkIndex < totalChunks else { return nil }
+                let idx = nextChunkIndex
+                nextChunkIndex += 1
+                return idx
+            }
 
             // 6. Progress throttle — shared across all chunk progress callbacks for this upload.
             //    Only forwards partial-byte updates to the MainActor if 100ms+ have elapsed,
@@ -632,7 +633,7 @@ actor UploadEngine {
                 }
 
                 // Seed initial concurrent tasks
-                let seedCount = min(await chunkConcurrencyController.currentConcurrency(), totalChunks)
+                let seedCount = min(await chunkConcurrencyController.snapshotConcurrency(), totalChunks)
                 for _ in 0..<seedCount {
                     guard addNextChunk() else { break }
                 }
@@ -670,10 +671,10 @@ actor UploadEngine {
                     }
 
                     // Add next chunks up to the current adaptive limit.
-                    while inFlightChunkCount < await chunkConcurrencyController.currentConcurrency() {
-                        if !addNextChunk() {
-                            break
-                        }
+                    while true {
+                        let limit = await chunkConcurrencyController.snapshotConcurrency()
+                        if inFlightChunkCount >= limit { break }
+                        if !addNextChunk() { break }
                     }
                 }
             }
