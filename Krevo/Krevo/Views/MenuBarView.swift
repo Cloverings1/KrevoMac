@@ -549,9 +549,16 @@ struct MenuBarView: View {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(url, forType: .string)
                 showCopiedBanner = true
-                Task {
+                // Reset the banner's dismissal timer so the "Link copied!" label
+                // stays visible for the full 1.5s instead of racing with the
+                // original 3s countdown.
+                appState.presentCompletionBanner(
+                    fileName: appState.completedFileName,
+                    shareURL: url,
+                    duration: 1.5
+                )
+                Task { @MainActor in
                     try? await Task.sleep(for: .seconds(1.5))
-                    appState.showCompletionBanner = false
                     showCopiedBanner = false
                 }
             } else {
