@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
+import os
 
 struct MenuBarView: View {
     @Environment(AppState.self) private var appState
@@ -624,6 +625,13 @@ struct MenuBarView: View {
             if !urls.isEmpty {
                 appState.startUpload(urls: urls)
                 withAnimation(.easeInOut(duration: 0.18)) { activeTab = .activity }
+            } else if !providers.isEmpty {
+                KrevoConstants.uploadLogger.warning("Drop resolved no valid file URLs from \(providers.count) provider(s)")
+                let failed = UploadTask(
+                    failedURL: URL(filePath: "dropped items"),
+                    message: "Dropped items could not be read as files"
+                )
+                appState.uploadTasks.insert(failed, at: 0)
             }
         }
     }
