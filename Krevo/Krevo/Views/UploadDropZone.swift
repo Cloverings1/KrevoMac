@@ -8,31 +8,27 @@ struct UploadDropZone: View {
     var compact: Bool = false
 
     var body: some View {
-        VStack(spacing: compact ? 6 : 10) {
+        VStack(spacing: compact ? 6 : 8) {
             Image(systemName: "arrow.up.doc")
-                .font(.system(size: compact ? 18 : 24, weight: .light))
-                .foregroundStyle(isTargeted ? Color.krevoViolet : Color.krevoTertiary)
+                .font(.system(size: compact ? 16 : 20, weight: .light))
+                .foregroundStyle(isTargeted ? Color.krevoAccentInk : Color.krevoTertiary)
 
             VStack(spacing: 2) {
-                Text("Drop files or folders")
-                    .font(.system(size: compact ? 12 : 13, weight: .medium))
-                    .foregroundStyle(isTargeted ? Color.krevoPrimary : Color.krevoSecondary)
-
-                Text("or click to browse")
-                    .font(.system(size: 11))
-                    .foregroundStyle(Color.krevoTertiary)
+                Text(isTargeted ? "Drop to upload instantly" : "Drop files or click to browse")
+                    .font(.system(size: compact ? 12 : 12, weight: .medium))
+                    .foregroundStyle(isTargeted ? Color.krevoAccentInk : Color.krevoSecondary)
             }
         }
         .frame(maxWidth: .infinity)
-        .frame(height: compact ? 72 : 110)
+        .frame(height: compact ? 56 : 80)
         .background(
             RoundedRectangle(cornerRadius: 12)
-                .fill(isTargeted ? Color.krevoViolet.opacity(0.08) : Color.clear)
+                .fill(isTargeted ? Color.krevoAccent.opacity(0.25) : Color.krevoSecondaryBg.opacity(0.6))
         )
         .overlay(
             RoundedRectangle(cornerRadius: 12)
                 .stroke(
-                    isTargeted ? Color.krevoViolet : Color.krevoBorder,
+                    isTargeted ? Color.krevoAccentInk.opacity(0.45) : Color.krevoBorder,
                     style: StrokeStyle(
                         lineWidth: 1,
                         dash: isTargeted ? [] : [6, 4]
