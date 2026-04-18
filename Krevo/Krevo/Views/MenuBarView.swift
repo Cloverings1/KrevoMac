@@ -1,11 +1,13 @@
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 
 struct MenuBarView: View {
     @Environment(AppState.self) private var appState
     @State private var isSigningOut = false
     @State private var showCopiedBanner = false
     @State private var activeTab: PanelTab = .activity
+    @State private var rootDropTargeted = false
 
     enum PanelTab: String, CaseIterable, Identifiable {
         case activity, files, account
@@ -80,6 +82,39 @@ struct MenuBarView: View {
             footerView
         }
         .frame(width: 360)
+        .onDrop(of: [.fileURL], isTargeted: $rootDropTargeted) { providers in
+            handleRootDrop(providers)
+            return true
+        }
+        .overlay {
+            if rootDropTargeted {
+                dragOverlay
+                    .transition(.opacity)
+            }
+        }
+        .animation(.easeInOut(duration: 0.15), value: rootDropTargeted)
+    }
+
+    private var dragOverlay: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 6)
+                .fill(Color.krevoAccent.opacity(0.55))
+            RoundedRectangle(cornerRadius: 6)
+                .strokeBorder(
+                    Color.krevoAccentInk.opacity(0.6),
+                    style: StrokeStyle(lineWidth: 2, dash: [8, 6])
+                )
+            VStack(spacing: 8) {
+                Image(systemName: "square.and.arrow.up.on.square")
+                    .font(.system(size: 28, weight: .regular))
+                Text("Drop to upload instantly")
+                    .font(.system(size: 15, weight: .semibold))
+                    .kerning(-0.2)
+            }
+            .foregroundStyle(Color.krevoAccentInk)
+        }
+        .padding(6)
+        .allowsHitTesting(false)
     }
 
     // MARK: - Header
@@ -576,12 +611,34 @@ struct MenuBarView: View {
               let url = latest.shareURL else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(url, forType: .string)
-        appState.completedFileName = latest.fileName
-        appState.completedShareURL = url
-        withAnimation { appState.showCompletionBanner = true }
-        Task {
-            try? await Task.sleep(for: .seconds(2))
-            appState.showCompletionBanner = false
+        appState.presentCompletionBanner(fileName: latest.fileName, shareURL: url, duration: 2)
+    }
+
+    private func handleRootDrop(_ providers: [NSItemProvider]) {
+        Task { @MainActor in
+            var urls: [URL] = []
+            for provider in providers {
+                guard provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) else { continue }
+                if let url = await loadFileURL(from: provider) { urls.append(url) }
+            }
+            if !urls.isEmpty {
+                appState.startUpload(urls: urls)
+                withAnimation(.easeInOut(duration: 0.18)) { activeTab = .activity }
+            }
+        }
+    }
+
+    private func loadFileURL(from provider: NSItemProvider) async -> URL? {
+        await withCheckedContinuation { continuation in
+            provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier) { item, _ in
+                guard let data = item as? Data,
+                      let url = URL(dataRepresentation: data, relativeTo: nil, isAbsolute: true)
+                else {
+                    continuation.resume(returning: nil)
+                    return
+                }
+                continuation.resume(returning: url)
+            }
         }
     }
 

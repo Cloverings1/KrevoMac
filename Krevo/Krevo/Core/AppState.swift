@@ -241,6 +241,25 @@ final class AppState {
         globalBanner = nil
     }
 
+    // MARK: - Completion banner
+
+    /// Present the completion/share banner. Uses a generation token so that
+    /// rapidly-repeated presentations cancel each other cleanly — the latest
+    /// caller wins and only its dismissal actually hides the banner.
+    func presentCompletionBanner(fileName: String, shareURL: String?, duration: TimeInterval = 3) {
+        bannerGeneration &+= 1
+        let generation = bannerGeneration
+        completedFileName = fileName
+        completedShareURL = shareURL
+        bannerDismissTask?.cancel()
+        showCompletionBanner = true
+        bannerDismissTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(duration))
+            guard let self, self.bannerGeneration == generation else { return }
+            self.showCompletionBanner = false
+        }
+    }
+
     // MARK: - Storage
 
     @discardableResult
@@ -487,19 +506,7 @@ final class AppState {
                 recentCompleted = Array(recentCompleted.prefix(KrevoConstants.maxHistoryCount))
             }
 
-            bannerGeneration &+= 1
-            let currentGeneration = bannerGeneration
-            completedFileName = task.fileName
-            completedShareURL = task.shareURL
-            bannerDismissTask?.cancel()
-            showCompletionBanner = true
-            bannerDismissTask = Task { @MainActor in
-                try? await Task.sleep(for: .seconds(3))
-                // Only dismiss if no newer banner has appeared
-                if bannerGeneration == currentGeneration {
-                    showCompletionBanner = false
-                }
-            }
+            presentCompletionBanner(fileName: task.fileName, shareURL: task.shareURL, duration: 3)
 
             // Haptic feedback for that "incredible feel"
             NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .default)
