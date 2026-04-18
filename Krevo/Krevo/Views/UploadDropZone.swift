@@ -1,6 +1,4 @@
 import SwiftUI
-import UniformTypeIdentifiers
-import os
 
 struct UploadDropZone: View {
     @Environment(AppState.self) private var appState
