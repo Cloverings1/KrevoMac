@@ -688,29 +688,22 @@ private struct TabPill: View {
     }
 }
 
-// MARK: - Breathing status dot
+// MARK: - Status dot
 
+// Calm, non-animating dot. The previous version had a repeatForever pulse
+// that could stack on popover reopens and read as 'weird' to the eye —
+// a steady indicator suits the 'All caught up' state better.
 private struct BreathingDot: View {
-    @State private var scale: CGFloat = 1.0
-    @State private var haloOpacity: Double = 0.18
-
     var body: some View {
         ZStack {
             Circle()
-                .fill(Color.krevoGreen.opacity(haloOpacity))
-                .frame(width: 17, height: 17)
+                .fill(Color.krevoGreen.opacity(0.18))
+                .frame(width: 13, height: 13)
             Circle()
                 .fill(Color.krevoGreen)
                 .frame(width: 7, height: 7)
-                .scaleEffect(scale)
         }
-        .frame(width: 17, height: 17)
-        .onAppear {
-            withAnimation(.easeInOut(duration: 2.4).repeatForever(autoreverses: true)) {
-                scale = 1.12
-                haloOpacity = 0
-            }
-        }
+        .frame(width: 13, height: 13)
     }
 }
 
