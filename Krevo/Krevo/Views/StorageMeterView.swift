@@ -29,16 +29,18 @@ struct StorageMeterView: View {
                     .foregroundStyle(Color.krevoQuaternary)
                     .padding(.top, 3)
 
-                HStack(spacing: 8) {
-                    planBadge
-                    Button(action: openManage) {
-                        Text("Manage")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(Color.krevoAccentInk.opacity(0.75))
+                if appState.storageLoaded {
+                    HStack(spacing: 8) {
+                        planBadge
+                        Button(action: openManage) {
+                            Text("Manage")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(Color.krevoAccentInk.opacity(0.75))
+                        }
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
+                    .padding(.top, 10)
                 }
-                .padding(.top, 10)
             }
 
             Spacer(minLength: 0)
@@ -87,9 +89,7 @@ struct StorageMeterView: View {
     }
 
     private func openManage() {
-        if let url = URL(string: "https://www.krevo.io/account") {
-            NSWorkspace.shared.open(url)
-        }
+        NSWorkspace.shared.open(KrevoConstants.baseURL)
     }
 
     private var accessibilityLabel: String {

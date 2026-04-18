@@ -3,7 +3,6 @@ import AppKit
 
 struct MenuBarView: View {
     @Environment(AppState.self) private var appState
-    @State private var appeared = false
     @State private var isSigningOut = false
     @State private var showCopiedBanner = false
     @State private var activeTab: PanelTab = .activity
@@ -81,12 +80,6 @@ struct MenuBarView: View {
             footerView
         }
         .frame(width: 360)
-        .onAppear {
-            withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) {
-                appeared = true
-            }
-        }
-        .onDisappear { appeared = false }
     }
 
     // MARK: - Header
@@ -156,10 +149,10 @@ struct MenuBarView: View {
     }
 
     private var initials: String {
-        let parts = displayName.split(separator: " ").prefix(2)
+        guard !appState.userName.isEmpty else { return "K" }
+        let parts = appState.userName.split(separator: " ").prefix(2)
         let chars = parts.compactMap { $0.first.map(String.init) }
-        if chars.isEmpty { return "K" }
-        return chars.joined().uppercased()
+        return chars.isEmpty ? "K" : chars.joined().uppercased()
     }
 
     private var displayName: String {
@@ -172,13 +165,19 @@ struct MenuBarView: View {
             return count == 1 ? "Uploading 1 file" : "Uploading \(count) files"
         }
         if !appState.isNetworkAvailable { return "Offline" }
+        let failed = terminalTasks.filter { if case .failed = $0.state { return true } else { return false } }.count
+        if failed > 0 {
+            return failed == 1 ? "1 upload needs attention" : "\(failed) uploads need attention"
+        }
         return "All caught up"
     }
 
     private var statusColor: Color {
         if appState.hasActiveUploads { return Color.krevoAccentInk }
         if !appState.isNetworkAvailable { return .krevoAmber }
-        return Color(hex: "10A759")
+        let hasFailed = terminalTasks.contains { if case .failed = $0.state { return true } else { return false } }
+        if hasFailed { return .krevoAmber }
+        return .krevoGreen
     }
 
     // MARK: - Tabs
@@ -407,6 +406,7 @@ struct MenuBarView: View {
                 icon: "link",
                 title: "Share link",
                 style: .normal,
+                disabled: !hasShareableUpload,
                 action: shareLatestLink
             )
         }
@@ -432,6 +432,10 @@ struct MenuBarView: View {
             if case .cancelled = task.state { return true }
             return false
         }
+    }
+
+    private var hasShareableUpload: Bool {
+        appState.recentCompleted.contains { $0.shareURL != nil }
     }
 
     private var terminalTasks: [UploadTask] {
@@ -534,8 +538,6 @@ struct MenuBarView: View {
             }
             Spacer()
             HStack(spacing: 4) {
-                FootButton(icon: "pause", tooltip: "Pause syncing", action: { })
-                FootButton(icon: "moon", tooltip: "Do not disturb", action: { })
                 FootButton(icon: "gearshape", tooltip: "Preferences", action: openPreferences)
             }
         }
@@ -566,9 +568,7 @@ struct MenuBarView: View {
     }
 
     private func openKrevoWeb() {
-        if let url = URL(string: "https://www.krevo.io/files") {
-            NSWorkspace.shared.open(url)
-        }
+        NSWorkspace.shared.open(KrevoConstants.baseURL)
     }
 
     private func shareLatestLink() {
@@ -586,9 +586,7 @@ struct MenuBarView: View {
     }
 
     private func openPreferences() {
-        if let url = URL(string: "https://www.krevo.io/account") {
-            NSWorkspace.shared.open(url)
-        }
+        NSWorkspace.shared.open(KrevoConstants.baseURL)
     }
 }
 
@@ -651,6 +649,7 @@ private struct ActionTile: View {
     let icon: String
     let title: String
     let style: Style
+    var disabled: Bool = false
     let action: () -> Void
     @State private var hovered = false
 
@@ -670,16 +669,18 @@ private struct ActionTile: View {
 
                 Text(title)
                     .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(Color.krevoSecondary)
+                    .foregroundStyle(disabled ? Color.krevoQuaternary : Color.krevoSecondary)
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 10)
             .background(
                 RoundedRectangle(cornerRadius: 9)
-                    .fill(hovered ? Color.krevoSecondaryBg : Color.clear)
+                    .fill(hovered && !disabled ? Color.krevoSecondaryBg : Color.clear)
             )
+            .opacity(disabled ? 0.55 : 1)
         }
         .buttonStyle(.plain)
+        .disabled(disabled)
         .onHover { hovered = $0 }
     }
 
