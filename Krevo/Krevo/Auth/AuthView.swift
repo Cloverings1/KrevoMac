@@ -8,29 +8,43 @@ struct AuthView: View {
         VStack(spacing: 0) {
             Spacer()
 
-            VStack(spacing: 6) {
+            // Mark
+            ZStack {
+                Circle()
+                    .fill(LinearGradient(
+                        colors: [Color.krevoAccent.opacity(0.5), Color.krevoAccent],
+                        startPoint: .topLeading, endPoint: .bottomTrailing
+                    ))
+                    .frame(width: 56, height: 56)
+                    .shadow(color: Color.krevoAccentInk.opacity(0.15), radius: 16, y: 6)
+                Image(systemName: "arrow.up")
+                    .font(.system(size: 22, weight: .semibold))
+                    .foregroundStyle(Color.krevoAccentInk)
+            }
+            .padding(.bottom, 16)
+
+            VStack(spacing: 4) {
                 Text("Krevo")
-                    .font(.system(size: 34, weight: .thin))
-                    .foregroundStyle(Color(hex: "FAFAFA"))
+                    .font(.system(size: 28, weight: .semibold))
+                    .kerning(-0.5)
+                    .foregroundStyle(Color.krevoPrimary)
 
                 Text("Upload files at full speed")
-                    .font(.system(size: 14))
-                    .foregroundStyle(Color(hex: "A1A1AA"))
+                    .font(.system(size: 13))
+                    .foregroundStyle(Color.krevoTertiary)
             }
 
-            Spacer().frame(height: 32)
+            Spacer().frame(height: 28)
 
             if authManager.isAuthenticating {
                 ProgressView()
                     .controlSize(.small)
-                    .tint(Color(hex: "8B5CF6"))
+                    .tint(Color.krevoAccentInk)
                     .frame(height: 36)
             } else {
                 KrevoButton(title: primaryButtonTitle, style: .primary) {
                     if shouldRetryStoredSession {
-                        Task {
-                            await appState.checkAuth()
-                        }
+                        Task { await appState.checkAuth() }
                     } else {
                         Task {
                             if let token = await authManager.signIn() {
@@ -39,27 +53,37 @@ struct AuthView: View {
                         }
                     }
                 }
-                .frame(maxWidth: 200)
+                .frame(maxWidth: 220)
             }
 
             if let error = authManager.error ?? appState.authMessage {
                 Text(error)
                     .font(.system(size: 12))
-                    .foregroundStyle(.red.opacity(0.9))
+                    .foregroundStyle(Color.krevoRed.opacity(0.9))
                     .multilineTextAlignment(.center)
                     .padding(.top, 12)
-                    .frame(maxWidth: 220)
+                    .frame(maxWidth: 240)
             }
 
             Spacer()
 
             Text("krevo.io")
-                .font(.system(size: 11))
-                .foregroundStyle(Color(hex: "52525B"))
-                .padding(.bottom, 16)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(Color.krevoQuaternary)
+                .padding(.bottom, 18)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color.black)
+        .background(
+            ZStack {
+                Color.krevoBg
+                RadialGradient(
+                    colors: [Color.krevoAccent.opacity(0.18), .clear],
+                    center: .init(x: 0.5, y: 0.15),
+                    startRadius: 0,
+                    endRadius: 220
+                )
+            }
+        )
     }
 
     private var shouldRetryStoredSession: Bool {
@@ -67,6 +91,6 @@ struct AuthView: View {
     }
 
     private var primaryButtonTitle: String {
-        shouldRetryStoredSession ? "Retry Connection" : "Connect Account"
+        shouldRetryStoredSession ? "Retry connection" : "Connect account"
     }
 }
