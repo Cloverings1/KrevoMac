@@ -28,12 +28,12 @@ struct KrevoButton: View {
             }
             .frame(maxWidth: .infinity)
             .padding(.horizontal, 10)
-            .padding(.vertical, 6)
+            .padding(.vertical, 7)
             .foregroundStyle(textColor)
             .background(background)
-            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
             .overlay(
-                RoundedRectangle(cornerRadius: 6)
+                RoundedRectangle(cornerRadius: 8)
                     .stroke(borderColor, lineWidth: hasBorder ? 1 : 0)
             )
         }
@@ -46,27 +46,25 @@ struct KrevoButton: View {
         .contentShape(Rectangle())
     }
 
-    // MARK: - Style Computations
-
     private var textColor: Color {
         switch style {
         case .primary:
-            return .white
+            return .krevoAccentInk
         case .secondary:
-            return Color(hex: "D4D4D8")
+            return .krevoSecondary
         case .destructive:
-            return Color(hex: "EF4444")
+            return .krevoRed
         }
     }
 
     private var background: Color {
         switch style {
         case .primary:
-            return isHovered ? Color(hex: "9B6FF6") : .krevoViolet
+            return isHovered ? .krevoAccentSoft : Color.krevoAccent.opacity(0.35)
         case .secondary:
-            return isHovered ? Color(hex: "27272A") : .clear
+            return isHovered ? .krevoSecondaryBg : .clear
         case .destructive:
-            return isHovered ? Color(hex: "EF4444").opacity(0.1) : .clear
+            return isHovered ? Color.krevoRed.opacity(0.08) : .clear
         }
     }
 
@@ -75,7 +73,7 @@ struct KrevoButton: View {
         case .primary:
             return .clear
         case .secondary:
-            return Color(hex: "3F3F46")
+            return .krevoBorder
         case .destructive:
             return .clear
         }

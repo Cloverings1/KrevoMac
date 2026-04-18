@@ -14,22 +14,37 @@ extension Color {
     }
 }
 
-// MARK: - Design Tokens
+// MARK: - Design Tokens (light mode — Krevo menu bar v2)
 
 extension Color {
-    static let krevoBg = Color.black
-    static let krevoSecondaryBg = Color(hex: "0A0A0A")
-    static let krevoCardBg = Color(hex: "111111")
+    // Surfaces
+    static let krevoBg = Color(hex: "FBFBFC")
+    static let krevoSecondaryBg = Color(hex: "F5F5F7")
+    static let krevoCardBg = Color.white
 
-    static let krevoPrimary = Color(hex: "FAFAFA")
-    static let krevoSecondary = Color(hex: "A1A1AA")
-    static let krevoTertiary = Color(hex: "8E8E93")
+    // Ink / text
+    static let krevoPrimary = Color(hex: "0A0A0B")
+    static let krevoSecondary = Color(hex: "3C3C43")
+    static let krevoTertiary = Color(hex: "6E6E76")
+    static let krevoQuaternary = Color(hex: "A1A1A8")
 
-    static let krevoViolet = Color(hex: "8B5CF6")
-    static let krevoFuchsia = Color(hex: "D946EF")
+    // Lines
+    static let krevoBorder = Color(hex: "E8E8EC")
+    static let krevoBorderSoft = Color(hex: "F2F2F4")
+
+    // Accent (baby blue)
+    static let krevoAccent = Color(hex: "9EC5FE")
+    static let krevoAccentDeep = Color(hex: "6AA4FB")
+    static let krevoAccentSoft = Color(hex: "C7DCFE")
+    static let krevoAccentInk = Color(hex: "1E3A8A")
+
+    // Legacy aliases kept so existing views don't break until migrated.
+    static var krevoViolet: Color { krevoAccentInk }
+    static var krevoFuchsia: Color { krevoAccentDeep }
+
+    // Status
+    static let krevoGreen = Color(hex: "22C55E")
     static let krevoAmber = Color(hex: "F59E0B")
     static let krevoCoral = Color(hex: "F97316")
     static let krevoRed = Color(hex: "EF4444")
-
-    static let krevoBorder = Color(hex: "27272A")
 }

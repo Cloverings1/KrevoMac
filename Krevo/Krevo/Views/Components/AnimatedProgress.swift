@@ -13,7 +13,7 @@ struct AnimatedProgress: View {
                 RoundedRectangle(cornerRadius: height / 2)
                     .fill(
                         LinearGradient(
-                            colors: [.krevoViolet, .krevoFuchsia],
+                            colors: [.krevoAccent, .krevoAccentDeep],
                             startPoint: .leading,
                             endPoint: .trailing
                         )
@@ -41,7 +41,7 @@ struct IndeterminateProgress: View {
                 RoundedRectangle(cornerRadius: height / 2)
                     .fill(
                         LinearGradient(
-                            colors: [.krevoViolet, .krevoFuchsia],
+                            colors: [.krevoAccent, .krevoAccentDeep],
                             startPoint: .leading,
                             endPoint: .trailing
                         )
