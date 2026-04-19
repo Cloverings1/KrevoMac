@@ -132,12 +132,26 @@ final class AuthManager {
     }
 
     private func token(from url: URL) -> String? {
-        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let raw = components.queryItems?.first(where: { $0.name == "token" })?.value
+        else {
             return nil
         }
 
-        return components.queryItems?.first(where: { $0.name == "token" })?.value
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard (32...512).contains(trimmed.count),
+              trimmed.unicodeScalars.allSatisfy({ AuthManager.tokenCharset.contains($0) })
+        else {
+            return nil
+        }
+        return trimmed
     }
+
+    private static let tokenCharset: CharacterSet = {
+        var set = CharacterSet.alphanumerics
+        set.insert(charactersIn: "._-")
+        return set
+    }()
 }
 
 private struct CallbackChallenge {
