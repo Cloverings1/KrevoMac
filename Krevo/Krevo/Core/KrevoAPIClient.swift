@@ -45,6 +45,9 @@ nonisolated struct StorageInfo: Decodable, Sendable {
     let tier: String
     let maxFileSize: Int64
     let retentionDays: Int
+    let canUpload: Bool
+    let accountState: String?
+    let upgradeMessage: String?
     let name: String?
     let email: String?
 
@@ -55,6 +58,9 @@ nonisolated struct StorageInfo: Decodable, Sendable {
         case tier
         case maxFileSize
         case retentionDays
+        case canUpload
+        case accountState
+        case upgradeMessage
         case name
         case fullName
         case displayName
@@ -70,6 +76,9 @@ nonisolated struct StorageInfo: Decodable, Sendable {
         tier = try container.decode(String.self, forKey: .tier)
         maxFileSize = try container.decode(Int64.self, forKey: .maxFileSize)
         retentionDays = try container.decode(Int.self, forKey: .retentionDays)
+        canUpload = try container.decodeIfPresent(Bool.self, forKey: .canUpload) ?? true
+        accountState = Self.normalizedValue(try container.decodeIfPresent(String.self, forKey: .accountState))
+        upgradeMessage = Self.normalizedValue(try container.decodeIfPresent(String.self, forKey: .upgradeMessage))
         let decodedName = Self.normalizedValue(try container.decodeIfPresent(String.self, forKey: .name))
         let decodedFullName = Self.normalizedValue(try container.decodeIfPresent(String.self, forKey: .fullName))
         let decodedDisplayName = Self.normalizedValue(try container.decodeIfPresent(String.self, forKey: .displayName))
@@ -114,6 +123,11 @@ nonisolated struct UploadCompleteResponse: Codable, Sendable {
     let filename: String
     let size: Int64
     let shareURL: String?
+}
+
+nonisolated struct ShareLinkResponse: Codable, Sendable {
+    let url: String
+    let id: String
 }
 
 private nonisolated enum ChunkUploadMapping {
@@ -165,14 +179,22 @@ private nonisolated func retryAfterSeconds(from response: HTTPURLResponse) -> In
         .flatMap(Int.init) ?? 60
 }
 
-private nonisolated func mapChunkTransportError(_ error: Error) -> KrevoAPIError {
+private nonisolated func mapChunkTransportError(_ error: Error) -> any Error {
+    if error is CancellationError {
+        return CancellationError()
+    }
+
+    if let urlError = error as? URLError, urlError.code == .cancelled {
+        return CancellationError()
+    }
+
     if let urlError = error as? URLError, urlError.code == .timedOut {
-        return .networkError(
+        return KrevoAPIError.networkError(
             "Chunk upload timed out after \(Int(KrevoConstants.chunkTimeout)) seconds without progress"
         )
     }
 
-    return .networkError(error.localizedDescription)
+    return KrevoAPIError.networkError(error.localizedDescription)
 }
 
 private nonisolated func mapChunkUploadError(
@@ -244,30 +266,31 @@ actor KrevoAPIClient {
         let apiConfig = URLSessionConfiguration.default
         apiConfig.httpMaximumConnectionsPerHost = KrevoConstants.maxConcurrentChunks
         apiConfig.timeoutIntervalForRequest = 600
-        apiConfig.waitsForConnectivity = true
+        apiConfig.waitsForConnectivity = false
         apiConfig.httpAdditionalHeaders = ["Content-Type": "application/json"]
         self.session = URLSession(configuration: apiConfig)
 
-        // Separate session for direct R2 chunk uploads (no auth headers)
+        // Separate session for direct R2 chunk uploads (no auth headers).
+        // Per-host connection limit must scale with (concurrent files × chunks) or uploads contend.
         let chunkConfig = URLSessionConfiguration.default
-        chunkConfig.httpMaximumConnectionsPerHost = max(
-            KrevoConstants.maxConcurrentChunks,
-            KrevoConstants.maxConcurrentUploads
-        )
+        chunkConfig.httpMaximumConnectionsPerHost = KrevoConstants.maxConcurrentChunkHTTPConnections
         chunkConfig.timeoutIntervalForRequest = KrevoConstants.chunkTimeout
-        chunkConfig.waitsForConnectivity = true
+        chunkConfig.waitsForConnectivity = false
+        chunkConfig.httpShouldSetCookies = false
+        chunkConfig.httpCookieAcceptPolicy = .never
+        chunkConfig.urlCache = URLCache(memoryCapacity: 0, diskCapacity: 0)
         self.chunkSession = URLSession(configuration: chunkConfig)
 
         // Shared delegate-based session for progress-aware chunk uploads
         // Created once — reused across all chunks for all uploads
         let router = ChunkProgressRouter()
         let progressConfig = URLSessionConfiguration.default
-        progressConfig.httpMaximumConnectionsPerHost = max(
-            KrevoConstants.maxConcurrentChunks,
-            KrevoConstants.maxConcurrentUploads
-        )
+        progressConfig.httpMaximumConnectionsPerHost = KrevoConstants.maxConcurrentChunkHTTPConnections
         progressConfig.timeoutIntervalForRequest = KrevoConstants.chunkTimeout
-        progressConfig.waitsForConnectivity = true
+        progressConfig.waitsForConnectivity = false
+        progressConfig.httpShouldSetCookies = false
+        progressConfig.httpCookieAcceptPolicy = .never
+        progressConfig.urlCache = URLCache(memoryCapacity: 0, diskCapacity: 0)
         self.progressRouter = router
         self.progressSession = URLSession(configuration: progressConfig, delegate: router, delegateQueue: nil)
     }
@@ -411,6 +434,19 @@ actor KrevoAPIClient {
         _ = try await makeRequest(method: "POST", path: "/r2/upload/abort", body: body)
     }
 
+    func createShareLink(fileId: String) async throws -> ShareLinkResponse {
+        struct Body: Encodable {
+            let file_id: String
+        }
+
+        let (data, _) = try await makeRequest(
+            method: "POST",
+            path: "/share",
+            body: Body(file_id: fileId)
+        )
+        return try decoder.decode(ShareLinkResponse.self, from: data)
+    }
+
     // MARK: - Chunk Upload (Direct to R2)
 
     /// Upload a chunk directly to R2 via presigned URL.
@@ -511,6 +547,14 @@ actor KrevoAPIClient {
         do {
             (data, response) = try await session.data(for: request)
         } catch {
+            if error is CancellationError {
+                throw CancellationError()
+            }
+
+            if let urlError = error as? URLError, urlError.code == .cancelled {
+                throw CancellationError()
+            }
+
             throw KrevoAPIError.networkError(error.localizedDescription)
         }
 
@@ -535,6 +579,7 @@ actor KrevoAPIClient {
             let error: String
             let code: String?
             let maxBytes: Int64?
+            let maxSize: Int64?
         }
 
         let parsed = try? decoder.decode(ErrorResponse.self, from: data)
@@ -546,7 +591,7 @@ actor KrevoAPIClient {
             case "QUOTA_EXCEEDED":
                 return .quotaExceeded
             case "FILE_TOO_LARGE":
-                return .fileTooLarge(maxBytes: parsed?.maxBytes ?? 0)
+                return .fileTooLarge(maxBytes: parsed?.maxBytes ?? parsed?.maxSize ?? 0)
             case "UPLOAD_EXPIRED":
                 return .uploadExpired
             case "NO_SUBSCRIPTION":

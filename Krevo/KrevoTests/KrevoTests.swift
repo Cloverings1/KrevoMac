@@ -19,6 +19,8 @@ struct KrevoTests {
         defer { try? FileManager.default.removeItem(at: url) }
 
         let task = try UploadTask(fileURL: url)
+        let attemptID = task.beginUploadAttempt()
+        task.activateUpload(uploadId: "upload-123", uploadKey: "key-123", totalChunks: 8, attemptID: attemptID)
         task.state = .failed("boom")
         task.progress = 0.72
         task.uploadedBytes = 2_048
@@ -28,10 +30,7 @@ struct KrevoTests {
         task.completedChunks = 3
         task.totalChunks = 8
         task.completionTime = Date()
-        task.uploadId = "upload-123"
-        task.uploadKey = "key-123"
         task.completedBytes = 2_048
-        task.updatePartialProgress(partNumber: 1, bytesSent: 512)
 
         task.resetForRetry()
 
@@ -61,16 +60,18 @@ struct KrevoTests {
         defer { try? FileManager.default.removeItem(at: url) }
 
         let task = try UploadTask(fileURL: url)
-        task.markChunkCompleted(partNumber: 1, chunkSize: 4_000)
-        task.updatePartialProgress(partNumber: 2, bytesSent: 1_500)
+        let attemptID = task.beginUploadAttempt()
+        task.activateUpload(uploadId: "upload-456", uploadKey: "key-456", totalChunks: 3, attemptID: attemptID)
+        task.markChunkCompleted(partNumber: 1, chunkSize: 4_000, attemptID: attemptID)
+        task.applyProgress([2: 1_500], attemptID: attemptID)
 
         #expect(task.uploadedBytes == 5_500)
         #expect(task.progress == 0.55)
 
-        task.updatePartialProgress(partNumber: 2, bytesSent: 2_000)
+        task.applyProgress([2: 2_000], attemptID: attemptID)
         #expect(task.uploadedBytes == 6_000)
 
-        task.markChunkCompleted(partNumber: 2, chunkSize: 3_000)
+        task.markChunkCompleted(partNumber: 2, chunkSize: 3_000, attemptID: attemptID)
         #expect(task.uploadedBytes == 7_000)
         #expect(task.progress == 0.7)
     }

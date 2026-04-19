@@ -5,6 +5,7 @@ struct UploadProgressView: View {
     let task: UploadTask
 
     @State private var isHovered = false
+    @State private var copyFeedbackVisible = false
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -19,7 +20,7 @@ struct UploadProgressView: View {
                     .foregroundStyle(Color.krevoPrimary)
                     .lineLimit(1)
                     .truncationMode(.middle)
-                    .frame(maxWidth: 200, alignment: .leading)
+                    .frame(maxWidth: 188, alignment: .leading)
 
                 progressContent
             }
@@ -33,6 +34,55 @@ struct UploadProgressView: View {
         .onHover { hovering in
             isHovered = hovering
         }
+    }
+
+    private enum UploadIssueKind {
+        case offline
+        case account
+        case historyOnly
+        case generic
+    }
+
+    private var hasShareLink: Bool {
+        guard let shareURL = task.shareURL else { return false }
+        return !shareURL.isEmpty
+    }
+
+    private var isHistoryOnly: Bool {
+        task.fileURL.path == "/dev/null"
+    }
+
+    private var uploadIssueKind: UploadIssueKind {
+        guard case .failed(let message) = task.state else { return .generic }
+        let lowered = message.lowercased()
+
+        if isHistoryOnly {
+            return .historyOnly
+        }
+        if lowered.contains("authentication required") ||
+            lowered.contains("sign in again") ||
+            lowered.contains("session expired") ||
+            lowered.contains("no active subscription")
+        {
+            return .account
+        }
+        if lowered.contains("timed out") ||
+            lowered.contains("timeout") ||
+            lowered.contains("connection was lost") ||
+            lowered.contains("network connection") ||
+            lowered.contains("not connected to the internet") ||
+            lowered.contains("offline") ||
+            !appState.isNetworkAvailable
+        {
+            return .offline
+        }
+
+        return .generic
+    }
+
+    private var canRetryInline: Bool {
+        guard case .failed = task.state else { return false }
+        return uploadIssueKind == .generic || uploadIssueKind == .offline
     }
 
     // MARK: - File Icon
@@ -120,9 +170,12 @@ struct UploadProgressView: View {
                     .foregroundStyle(Color.krevoSecondary)
 
                 if !appState.isNetworkAvailable {
-                    Text("Waiting for network...")
-                        .font(.system(size: 11))
-                        .foregroundStyle(Color.krevoTertiary)
+                    statusPill(
+                        icon: "wifi.slash",
+                        title: "Offline hold",
+                        tint: .krevoAmber,
+                        backgroundOpacity: 0.1
+                    )
                 } else {
                     HStack(spacing: 0) {
                         if task.speed > 0 {
@@ -146,31 +199,76 @@ struct UploadProgressView: View {
         case .completing:
             VStack(alignment: .leading, spacing: 4) {
                 IndeterminateProgress()
-                Text("Finalizing...")
+                Text("Finalizing in your account…")
                     .font(.system(size: 11))
                     .foregroundStyle(Color.krevoTertiary)
             }
 
         case .completed:
-            Text(AppState.formatBytes(task.fileSize))
-                .font(.system(size: 11))
-                .foregroundStyle(Color.krevoTertiary)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(AppState.formatBytes(task.fileSize))
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.krevoTertiary)
+
+                if copyFeedbackVisible {
+                    statusPill(
+                        icon: "checkmark.circle.fill",
+                        title: "Link copied",
+                        tint: .krevoGreen,
+                        backgroundOpacity: 0.08
+                    )
+                } else if hasShareLink {
+                    statusPill(
+                        icon: "link",
+                        title: "Copy link available",
+                        tint: .krevoViolet,
+                        backgroundOpacity: 0.08
+                    )
+                } else {
+                    statusPill(
+                        icon: "folder",
+                        title: "Open in dashboard",
+                        tint: .krevoSecondary,
+                        backgroundOpacity: 0.05
+                    )
+                }
+            }
 
         case .failed(let message):
             VStack(alignment: .leading, spacing: 2) {
-                Text("Upload failed")
+                Text(failureTitle(for: message))
                     .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(Color.krevoRed.opacity(0.95))
-                Text(UploadTask.userFriendlyMessage(message))
+                    .foregroundStyle(failureTint.opacity(0.95))
+                Text(failureSubtitle(for: message))
                     .font(.system(size: 11))
-                    .foregroundStyle(Color.krevoRed.opacity(0.8))
+                    .foregroundStyle(failureTint.opacity(0.8))
                     .lineLimit(2)
+                if uploadIssueKind == .historyOnly {
+                    statusPill(
+                        icon: "lock",
+                        title: "Read-only history row",
+                        tint: .krevoAmber,
+                        backgroundOpacity: 0.08
+                    )
+                    .padding(.top, 3)
+                }
             }
 
         case .cancelled:
-            Text("Cancelled")
-                .font(.system(size: 11))
-                .foregroundStyle(Color.krevoTertiary)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(isHistoryOnly ? "Cancelled earlier" : "Cancelled")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.krevoTertiary)
+
+                if isHistoryOnly {
+                    statusPill(
+                        icon: "clock.arrow.circlepath",
+                        title: "History only",
+                        tint: .krevoTertiary,
+                        backgroundOpacity: 0.06
+                    )
+                }
+            }
         }
     }
 
@@ -216,19 +314,154 @@ struct UploadProgressView: View {
             }
 
         case .failed:
-            Button {
-                appState.retryUpload(task)
-            } label: {
-                Image(systemName: "arrow.clockwise")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(Color.krevoViolet)
+            if canRetryInline {
+                Button {
+                    appState.retryUpload(task)
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(Color.krevoViolet)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Retry upload")
+            } else {
+                issueBadge
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Retry upload")
 
-        case .completed, .cancelled:
+        case .completed:
+            if hasShareLink {
+                Button(action: copyShareLink) {
+                    Text(copyFeedbackVisible ? "Copied" : "Copy link")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(copyFeedbackVisible ? Color.krevoGreen : Color.krevoViolet)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 5)
+                        .background(
+                            Capsule()
+                                .fill((copyFeedbackVisible ? Color.krevoGreen : Color.krevoAccent).opacity(0.08))
+                        )
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(copyFeedbackVisible ? "Link copied" : "Copy share link")
+            } else {
+                Button(action: openKrevoWeb) {
+                    Text("Dashboard")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(Color.krevoSecondary)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 5)
+                        .background(
+                            Capsule()
+                                .fill(Color.krevoSecondaryBg)
+                        )
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Open dashboard")
+            }
+
+        case .cancelled:
             EmptyView()
         }
+    }
+
+    private var failureTint: Color {
+        switch uploadIssueKind {
+        case .offline, .historyOnly:
+            return .krevoAmber
+        case .account:
+            return .krevoRed
+        case .generic:
+            return .krevoRed
+        }
+    }
+
+    private var issueBadge: some View {
+        let title: String
+        let tint: Color
+
+        switch uploadIssueKind {
+        case .account:
+            title = "Account"
+            tint = .krevoRed
+        case .historyOnly:
+            title = "History"
+            tint = .krevoAmber
+        case .offline:
+            title = "Offline"
+            tint = .krevoAmber
+        case .generic:
+            title = "Issue"
+            tint = .krevoRed
+        }
+
+        return Text(title)
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(tint)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .background(
+                Capsule()
+                    .fill(tint.opacity(0.08))
+            )
+    }
+
+    private func failureTitle(for message: String) -> String {
+        switch uploadIssueKind {
+        case .offline:
+            return "Connection interrupted"
+        case .account:
+            return "Reconnect account"
+        case .historyOnly:
+            return "Retry needs the original file"
+        case .generic:
+            return "Upload failed"
+        }
+    }
+
+    private func failureSubtitle(for message: String) -> String {
+        switch uploadIssueKind {
+        case .offline:
+            return "The upload stopped when the connection dropped. Retry after you're back online."
+        case .account:
+            return "Your current session needs attention before this file can upload again."
+        case .historyOnly:
+            return "This row is now read-only. Re-open the original file or folder to upload it again."
+        case .generic:
+            return UploadTask.userFriendlyMessage(message)
+        }
+    }
+
+    @ViewBuilder
+    private func statusPill(icon: String, title: String, tint: Color, backgroundOpacity: Double) -> some View {
+        HStack(spacing: 5) {
+            Image(systemName: icon)
+                .font(.system(size: 10, weight: .semibold))
+            Text(title)
+                .font(.system(size: 10, weight: .semibold))
+        }
+        .foregroundStyle(tint)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(
+            Capsule()
+                .fill(tint.opacity(backgroundOpacity))
+        )
+    }
+
+    private func copyShareLink() {
+        guard let url = task.shareURL else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(url, forType: .string)
+        copyFeedbackVisible = true
+
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(1.5))
+            copyFeedbackVisible = false
+        }
+    }
+
+    private func openKrevoWeb() {
+        NSWorkspace.shared.open(KrevoConstants.baseURL)
     }
 }
 
@@ -255,29 +488,29 @@ struct RecentCompletedRow: View {
             Spacer()
 
             if task.shareURL != nil {
-                if showCopied {
-                    Text("Copied!")
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(Color(hex: "22C55E"))
-                } else {
-                    Button {
-                        if let url = task.shareURL {
-                            NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(url, forType: .string)
-                            showCopied = true
-                            Task {
-                                try? await Task.sleep(for: .seconds(1.5))
-                                showCopied = false
-                            }
+                Button {
+                    if let url = task.shareURL {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(url, forType: .string)
+                        showCopied = true
+                        Task {
+                            try? await Task.sleep(for: .seconds(1.5))
+                            showCopied = false
                         }
-                    } label: {
-                        Image(systemName: "link")
-                            .font(.system(size: 10, weight: .medium))
-                            .foregroundStyle(Color.krevoViolet)
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Copy share link")
+                } label: {
+                    Text(showCopied ? "Copied" : "Copy link")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(showCopied ? Color.krevoGreen : Color.krevoViolet)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(
+                            Capsule()
+                                .fill((showCopied ? Color.krevoGreen : Color.krevoAccent).opacity(0.08))
+                        )
                 }
+                .buttonStyle(.plain)
+                .accessibilityLabel(showCopied ? "Link copied" : "Copy share link")
             }
 
             if let displayTime = task.completionTime ?? task.startTime {

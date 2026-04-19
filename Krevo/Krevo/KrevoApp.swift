@@ -65,6 +65,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         }
     }
 
+    func applicationDidBecomeActive(_ notification: Notification) {
+        Task { @MainActor in
+            await AppState.shared.applicationDidBecomeActive()
+        }
+    }
+
     // MARK: - Notification Delegate
 
     func userNotificationCenter(

@@ -52,6 +52,7 @@ final class UploadTask: Identifiable {
     var uploadId: String?
     var uploadKey: String?
     var shareURL: String?
+    private var activeAttemptID = UUID()
 
     // Per-chunk byte-level progress tracking
     /// Tracks partial bytes sent for each in-flight chunk (partNumber -> bytesSent).
@@ -99,7 +100,7 @@ final class UploadTask: Identifiable {
         self.relativePath = nil
         self.fileName = entry.fileName
         self.fileSize = entry.fileSize
-        self.shareURL = entry.shareURL ?? entry.fileId.map { "https://www.krevo.io/file/\($0)" }
+        self.shareURL = entry.shareURL
         self.completionTime = entry.completionTime
 
         switch entry.result {
@@ -113,6 +114,50 @@ final class UploadTask: Identifiable {
         case .cancelled:
             self.state = .cancelled
         }
+    }
+
+    @discardableResult
+    func beginUploadAttempt() -> UUID {
+        let attemptID = UUID()
+        activeAttemptID = attemptID
+        state = .initializing
+        progress = 0
+        uploadedBytes = 0
+        speed = 0
+        estimatedTimeRemaining = nil
+        startTime = nil
+        completedChunks = 0
+        totalChunks = 0
+        completionTime = nil
+        uploadId = nil
+        uploadKey = nil
+        shareURL = nil
+        completedBytes = 0
+        inFlightPartialBytes.removeAll()
+        inFlightPartialTotal = 0
+        speedSampleCount = 0
+        lastSampleTime = nil
+        lastSampleBytes = 0
+        return attemptID
+    }
+
+    func activateUpload(
+        uploadId: String,
+        uploadKey: String,
+        totalChunks: Int,
+        attemptID: UUID
+    ) {
+        guard isCurrentAttempt(attemptID) else { return }
+        self.uploadId = uploadId
+        self.uploadKey = uploadKey
+        self.totalChunks = totalChunks
+        self.state = .uploading
+        self.startTime = Date()
+    }
+
+    func markCompleting(attemptID: UUID) {
+        guard canApply(attemptID) else { return }
+        state = .completing
     }
 
     /// Maps raw error messages to user-friendly descriptions.
@@ -138,7 +183,7 @@ final class UploadTask: Identifiable {
 
     /// Update partial byte-level progress for an in-flight chunk.
     /// Call once per part, then call `updateSpeed()` once after all parts in a batch.
-    func updatePartialProgress(partNumber: Int, bytesSent: Int64) {
+    private func updatePartialProgress(partNumber: Int, bytesSent: Int64) {
         let previous = inFlightPartialBytes[partNumber] ?? 0
         inFlightPartialBytes[partNumber] = bytesSent
         inFlightPartialTotal += (bytesSent - previous)
@@ -151,7 +196,7 @@ final class UploadTask: Identifiable {
 
     /// Compute speed from the accumulated byte progress since the last speed sample.
     /// Call once per flush batch, after all `updatePartialProgress` calls.
-    func updateSpeed() {
+    private func updateSpeed() {
         let clampedBytes = uploadedBytes
         let now = Date()
         speedSampleCount += 1
@@ -181,8 +226,17 @@ final class UploadTask: Identifiable {
         lastSampleBytes = clampedBytes
     }
 
+    func applyProgress(_ pending: [Int: Int64], attemptID: UUID) {
+        guard canApply(attemptID) else { return }
+        for (partNumber, bytesSent) in pending {
+            updatePartialProgress(partNumber: partNumber, bytesSent: bytesSent)
+        }
+        updateSpeed()
+    }
+
     /// Mark a chunk as fully completed. Moves its bytes from in-flight to completed.
-    func markChunkCompleted(partNumber: Int, chunkSize: Int64) {
+    func markChunkCompleted(partNumber: Int, chunkSize: Int64, attemptID: UUID) {
+        guard canApply(attemptID) else { return }
         completedBytes += chunkSize
         let removed = inFlightPartialBytes.removeValue(forKey: partNumber) ?? 0
         inFlightPartialTotal = max(0, inFlightPartialTotal - removed)
@@ -192,7 +246,8 @@ final class UploadTask: Identifiable {
 
     /// Reset partial progress for a single chunk part when a retry starts.
     /// Prevents stale bytes from the failed attempt from being double-counted.
-    func resetPartialProgress(partNumber: Int) {
+    func resetPartialProgress(partNumber: Int, attemptID: UUID) {
+        guard canApply(attemptID) else { return }
         let previous = inFlightPartialBytes[partNumber] ?? 0
         inFlightPartialBytes[partNumber] = 0
         inFlightPartialTotal = max(0, inFlightPartialTotal - previous)
@@ -203,7 +258,13 @@ final class UploadTask: Identifiable {
         lastSampleBytes = uploadedBytes
     }
 
+    func setCompletedChunks(_ count: Int, attemptID: UUID) {
+        guard canApply(attemptID) else { return }
+        completedChunks = count
+    }
+
     func resetForRetry() {
+        activeAttemptID = UUID()
         state = .pending
         progress = 0
         uploadedBytes = 0
@@ -215,6 +276,7 @@ final class UploadTask: Identifiable {
         completionTime = nil
         uploadId = nil
         uploadKey = nil
+        shareURL = nil
         completedBytes = 0
         inFlightPartialBytes.removeAll()
         inFlightPartialTotal = 0
@@ -223,16 +285,38 @@ final class UploadTask: Identifiable {
         lastSampleBytes = 0
     }
 
-    func markCompleted(fileId: String, shareURL: String? = nil) {
+    func markCompleted(fileId: String, shareURL: String? = nil, attemptID: UUID) {
+        guard canApply(attemptID) else { return }
         self.progress = 1.0
         self.uploadedBytes = fileSize
         self.estimatedTimeRemaining = 0
         self.completionTime = Date()
+        self.uploadId = nil
+        self.uploadKey = nil
         self.shareURL = shareURL
         self.state = .completed(fileId: fileId)
+        self.speed = 0
     }
 
     func markFailed(_ error: Error) {
+        finishFailure(error)
+    }
+
+    func markFailed(_ error: Error, attemptID: UUID) {
+        guard canApply(attemptID) else { return }
+        finishFailure(error)
+    }
+
+    func markCancelled() {
+        finishCancellation()
+    }
+
+    func markCancelled(attemptID: UUID) {
+        guard canApply(attemptID) else { return }
+        finishCancellation()
+    }
+
+    private func finishFailure(_ error: Error) {
         let message: String
         if let apiError = error as? KrevoAPIError {
             message = apiError.localizedDescription
@@ -240,15 +324,29 @@ final class UploadTask: Identifiable {
             message = error.localizedDescription
         }
         self.state = .failed(message)
+        self.uploadId = nil
+        self.uploadKey = nil
+        self.shareURL = nil
         self.speed = 0
         self.estimatedTimeRemaining = nil
         self.completionTime = Date()
     }
 
-    func markCancelled() {
+    private func finishCancellation() {
         self.state = .cancelled
+        self.uploadId = nil
+        self.uploadKey = nil
+        self.shareURL = nil
         self.speed = 0
         self.estimatedTimeRemaining = nil
         self.completionTime = Date()
+    }
+
+    private func isCurrentAttempt(_ attemptID: UUID) -> Bool {
+        activeAttemptID == attemptID
+    }
+
+    private func canApply(_ attemptID: UUID) -> Bool {
+        isCurrentAttempt(attemptID) && !state.isTerminal
     }
 }

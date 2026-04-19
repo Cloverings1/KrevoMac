@@ -1,4 +1,5 @@
 import AuthenticationServices
+import Foundation
 
 @Observable
 @MainActor
@@ -11,6 +12,7 @@ final class AuthManager {
     /// Retained so ARC cannot deallocate the session before the callback fires.
     private var currentSession: ASWebAuthenticationSession?
     private var pendingContinuation: CheckedContinuation<String?, Never>?
+    private var pendingChallenge: CallbackChallenge?
 
     func signIn() async -> String? {
         guard !isAuthenticating else { return nil }
@@ -22,13 +24,16 @@ final class AuthManager {
             isAuthenticating = false
             currentSession = nil
             pendingContinuation = nil
+            pendingChallenge = nil
         }
 
         return await withCheckedContinuation { continuation in
             pendingContinuation = continuation
+            let challenge = CallbackChallenge()
+            pendingChallenge = challenge
 
             let session = ASWebAuthenticationSession(
-                url: KrevoConstants.authURL,
+                url: authURL(for: challenge),
                 callbackURLScheme: KrevoConstants.urlScheme
             ) { [weak self] callbackURL, error in
                 Task { @MainActor [weak self] in
@@ -51,6 +56,11 @@ final class AuthManager {
     func handleCallbackURL(_ url: URL) -> Bool {
         guard pendingContinuation != nil else { return false }
         guard url.scheme == KrevoConstants.urlScheme, url.host == "auth" else { return false }
+        guard validateCallback(url) else {
+            error = "Sign-in response could not be verified. Retry the secure sign-in flow."
+            finishSignIn(with: nil)
+            return true
+        }
 
         guard let token = token(from: url) else {
             error = "Failed to get authentication token."
@@ -97,6 +107,30 @@ final class AuthManager {
         continuation.resume(returning: token)
     }
 
+    private func authURL(for challenge: CallbackChallenge) -> URL {
+        guard var components = URLComponents(url: KrevoConstants.authURL, resolvingAgainstBaseURL: false) else {
+            return KrevoConstants.authURL
+        }
+
+        var queryItems = components.queryItems ?? []
+        queryItems.append(URLQueryItem(name: "state", value: challenge.state))
+        queryItems.append(URLQueryItem(name: "nonce", value: challenge.nonce))
+        components.queryItems = queryItems
+        return components.url ?? KrevoConstants.authURL
+    }
+
+    private func validateCallback(_ url: URL) -> Bool {
+        guard let challenge = pendingChallenge,
+              let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            return false
+        }
+
+        let returnedState = components.queryItems?.first(where: { $0.name == "state" })?.value
+        let returnedNonce = components.queryItems?.first(where: { $0.name == "nonce" })?.value
+
+        return returnedState == challenge.state && returnedNonce == challenge.nonce
+    }
+
     private func token(from url: URL) -> String? {
         guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
             return nil
@@ -104,6 +138,11 @@ final class AuthManager {
 
         return components.queryItems?.first(where: { $0.name == "token" })?.value
     }
+}
+
+private struct CallbackChallenge {
+    let state = UUID().uuidString.lowercased()
+    let nonce = UUID().uuidString.lowercased()
 }
 
 // MARK: - Presentation Context

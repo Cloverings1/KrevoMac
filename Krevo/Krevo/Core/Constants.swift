@@ -7,15 +7,19 @@ nonisolated enum KrevoConstants {
     static let authURL = URL(string: "https://www.krevo.io/mac-auth")!
     static let urlScheme = "krevo"
 
-    // Upload constants (match server-side graphite-uploader.ts)
-    static let maxConcurrentChunks = 20
-    static let minConcurrentChunks = 2
+    // Upload constants (match server-side graphite-uploader.ts).
+    // Tuned for multi-gigabit links: enough parallel PUTs and RAM to fill the pipe without
+    // starving URLSession (see maxConcurrentChunkHTTPConnections).
+    static let maxConcurrentChunks = 32
+    static let minConcurrentChunks = 4
     static let concurrencyScaleWindow = 12
     static let concurrencyScaleUpFailureRate = 0.08
     static let concurrencyScaleDownFailureRate = 0.28
-    static let targetChunkLatencySeconds: TimeInterval = 1.4
+    /// Below this average chunk latency, adaptive concurrency ramps up (aggressive on fast networks).
+    static let targetChunkLatencySeconds: TimeInterval = 0.85
     static let chunkFailureLatencyPenaltySeconds: TimeInterval = 2.8
-    static let maxMemoryBudget = 500_000_000 // 500 MB
+    /// Global cap for in-flight chunk *reservations* (multiple uploads share this pool).
+    static let maxMemoryBudget = 1_500_000_000 // 1.5 GB
     static let initialPresignedParts = 128
     static let urlRefreshBatchSize = 128
     static let maxRetries = 6
@@ -30,8 +34,13 @@ nonisolated enum KrevoConstants {
     static let keychainService = "io.krevo.mac"
     static let keychainTokenKey = "device-token"
 
-    // Upload queue
-    static let maxConcurrentUploads = 3
+    // Upload queue — parallel files (each file also runs up to maxConcurrentChunks chunk PUTs).
+    static let maxConcurrentUploads = 8
+
+    /// URLSession limit per storage host: must cover worst case (all files × chunks) or connections queue.
+    static var maxConcurrentChunkHTTPConnections: Int {
+        max(maxConcurrentChunks * maxConcurrentUploads, maxConcurrentChunks + 8)
+    }
 
     // History
     static let maxHistoryCount = 50

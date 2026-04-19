@@ -10,6 +10,51 @@ nonisolated enum GlobalBanner: Equatable {
     case serverAnnouncement(String)
 }
 
+nonisolated enum AccountAccessState: Equatable {
+    case unknown
+    case fullAccess
+    case readOnly(AccountReadOnlyReason)
+}
+
+nonisolated enum AccountReadOnlyReason: String, Equatable {
+    case free
+    case unpaid
+    case upgradeRequired
+
+    var title: String {
+        switch self {
+        case .free:
+            return "Free plan"
+        case .unpaid:
+            return "Billing issue"
+        case .upgradeRequired:
+            return "Upgrade required"
+        }
+    }
+
+    var message: String {
+        switch self {
+        case .free:
+            return "This account is connected in read-only mode. Upgrade on the web to upload from Mac."
+        case .unpaid:
+            return "Billing needs attention before uploads can resume. Manage the account on the web."
+        case .upgradeRequired:
+            return "Uploads are locked until this account is upgraded. Manage the account on the web."
+        }
+    }
+
+    var statusText: String {
+        switch self {
+        case .free:
+            return "Read-only free plan"
+        case .unpaid:
+            return "Read-only until billing is fixed"
+        case .upgradeRequired:
+            return "Read-only until upgraded"
+        }
+    }
+}
+
 @Observable
 final class AppState {
 
@@ -21,6 +66,7 @@ final class AppState {
     var isAuthenticated = false
     var isCheckingAuth = true
     var hasStoredSession = false
+    var isSessionValidated = false
     var authMessage: String?
     private var hasInitialized = false
 
@@ -35,11 +81,15 @@ final class AppState {
     var storageErrorMessage: String?
     var userName: String = ""
     var userEmail: String = ""
+    var accountCanUpload = true
+    var serverAccountStateRaw: String = ""
+    var serverUpgradeMessage: String?
 
     // MARK: - Network
 
     var isNetworkAvailable = true
     private var pathMonitor: NWPathMonitor?
+    private var reconnectTask: Task<Void, Never>?
 
     // MARK: - Uploads
 
@@ -116,20 +166,42 @@ final class AppState {
         pathMonitor = monitor
         monitor.pathUpdateHandler = { [weak self] path in
             Task { @MainActor [weak self] in
+                guard let self else { return }
                 let isAvailable = path.status == .satisfied
+                let wasAvailable = self.isNetworkAvailable
                 KrevoConstants.logger.info("Network status changed: \(isAvailable ? "online" : "offline")")
-                self?.isNetworkAvailable = isAvailable
+                self.isNetworkAvailable = isAvailable
 
                 if isAvailable {
-                    if case .networkOffline = self?.globalBanner {
-                        self?.globalBanner = nil
+                    if case .networkOffline = self.globalBanner {
+                        self.globalBanner = nil
+                    }
+                    if !wasAvailable {
+                        self.scheduleReconnect(reason: "network restored")
                     }
                 } else {
-                    self?.globalBanner = .networkOffline
+                    self.globalBanner = .networkOffline
                 }
             }
         }
         monitor.start(queue: DispatchQueue(label: "io.krevo.mac.network"))
+    }
+
+    func applicationDidBecomeActive() async {
+        guard shouldPresentAuthenticatedShell else { return }
+        guard isNetworkAvailable else { return }
+        guard !isCheckingAuth else { return }
+
+        if !isSessionValidated || storageErrorMessage != nil || authMessage != nil {
+            scheduleReconnect(reason: "app activated")
+        }
+    }
+
+    func handleBlockedUploadAttempt() {
+        if !isNetworkAvailable {
+            globalBanner = .networkOffline
+        }
+        storageErrorMessage = uploadAvailabilityMessage
     }
 
     // MARK: - Computed
@@ -157,6 +229,88 @@ final class AppState {
         return "Your account"
     }
 
+    var shouldPresentAuthenticatedShell: Bool {
+        isAuthenticated || hasStoredSession
+    }
+
+    var accountAccessState: AccountAccessState {
+        guard storageLoaded else { return .unknown }
+
+        let normalizedPlan = normalizedAccountStateValue(plan)
+        let normalizedTier = normalizedAccountStateValue(tier)
+        let normalizedServerState = normalizedAccountStateValue(serverAccountStateRaw)
+        let values = [normalizedPlan, normalizedTier, normalizedServerState]
+
+        if values.contains(where: { $0.contains("unpaid") || $0.contains("past_due") || $0.contains("past due") }) {
+            return .readOnly(.unpaid)
+        }
+
+        if values.contains(where: { $0 == "free" || $0.contains("free_plan") || $0.contains("free plan") }) ||
+            normalizedTier == "free"
+        {
+            return .readOnly(.free)
+        }
+
+        if !accountCanUpload ||
+            values.contains(where: { $0.contains("upgrade_required") || $0.contains("upgrade required") })
+        {
+            return .readOnly(.upgradeRequired)
+        }
+
+        return .fullAccess
+    }
+
+    var isReadOnlyAccount: Bool {
+        if case .readOnly = accountAccessState {
+            return true
+        }
+        return false
+    }
+
+    var accountPlanLabel: String {
+        if storageLoaded {
+            let base = tier.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !base.isEmpty {
+                return base
+                    .replacingOccurrences(of: "_", with: " ")
+                    .localizedCapitalized
+            }
+
+            if case .readOnly(.free) = accountAccessState {
+                return "Free"
+            }
+        }
+
+        return storageLoaded ? "Unknown" : "Unavailable"
+    }
+
+    var canStartUploads: Bool {
+        guard shouldPresentAuthenticatedShell else { return false }
+        guard isSessionValidated else { return false }
+        guard isNetworkAvailable else { return false }
+        return !isReadOnlyAccount
+    }
+
+    var uploadAvailabilityMessage: String {
+        guard shouldPresentAuthenticatedShell else {
+            return "Connect your account before starting uploads."
+        }
+
+        if !isNetworkAvailable {
+            return "Reconnect to start uploads."
+        }
+
+        if !isSessionValidated {
+            return "Reconnect to validate your session before starting uploads."
+        }
+
+        if case .readOnly(let reason) = accountAccessState {
+            return serverUpgradeMessage ?? reason.message
+        }
+
+        return "Uploads are temporarily unavailable."
+    }
+
     // MARK: - Auth Actions
 
     func checkAuth() async {
@@ -164,39 +318,32 @@ final class AppState {
         defer { isCheckingAuth = false }
 
         guard let token = KeychainService.loadToken() else {
-            isAuthenticated = false
-            hasStoredSession = false
-            authMessage = nil
+            clearLocalSession(preserveAuthMessage: false)
             return
         }
 
         hasStoredSession = true
-        authMessage = nil
         await apiClient.setToken(token)
 
         do {
             let info = try await apiClient.validateToken()
             applyStorageInfo(info)
             isAuthenticated = true
+            isSessionValidated = true
             authMessage = nil
+            storageErrorMessage = nil
             if case .authRequired = globalBanner {
                 globalBanner = nil
             }
         } catch let apiError as KrevoAPIError {
-            isAuthenticated = false
             switch apiError {
             case .unauthorized:
-                await apiClient.clearToken()
-                KeychainService.deleteToken()
-                hasStoredSession = false
-                authMessage = "Your saved session expired. Connect your account again."
-                globalBanner = .authRequired
+                await expireStoredSession(message: "Your saved session expired. Connect your account again.")
             default:
-                authMessage = authFailureMessage(for: apiError)
+                preserveAuthenticatedShell(for: apiError)
             }
         } catch {
-            isAuthenticated = false
-            authMessage = authFailureMessage(for: error)
+            preserveAuthenticatedShell(for: error)
         }
     }
 
@@ -213,42 +360,31 @@ final class AppState {
         }
         userName = ""
         userEmail = ""
+        storageErrorMessage = nil
+        accountCanUpload = true
+        serverAccountStateRaw = ""
+        serverUpgradeMessage = nil
         await apiClient.setToken(token)
         await checkAuth()
     }
 
     func signOut() async {
+        reconnectTask?.cancel()
+        reconnectTask = nil
         await abortAllUploads()
+        let token = KeychainService.loadToken()
 
-        // Attempt to revoke on the server (best-effort)
-        try? await apiClient.revokeToken()
-
-        // Clear local state regardless
+        clearLocalSession(preserveAuthMessage: false)
+        Task { await historyStore.clear() }
         await apiClient.clearToken()
         KeychainService.deleteToken()
 
-        isAuthenticated = false
-        storageUsed = 0
-        storageLimit = 0
-        maxFileSize = 0
-        storageLoaded = false
-        storageLastRefreshed = nil
-        tier = ""
-        plan = ""
-        userName = ""
-        userEmail = ""
-        storageErrorMessage = nil
-        hasStoredSession = false
-        authMessage = nil
-        uploadTasks.removeAll()
-        recentCompleted.removeAll()
-        Task { await historyStore.clear() }
-        pendingQueue.removeAll()
-        runningCount = 0
-        showCompletionBanner = false
-        bannerDismissTask?.cancel()
-        bannerDismissTask = nil
-        globalBanner = nil
+        guard let token else { return }
+        Task {
+            let revocationClient = KrevoAPIClient()
+            await revocationClient.setToken(token)
+            try? await revocationClient.revokeToken()
+        }
     }
 
     // MARK: - Completion banner
@@ -277,6 +413,8 @@ final class AppState {
         do {
             let info = try await apiClient.getStorageInfo()
             applyStorageInfo(info)
+            isSessionValidated = true
+            authMessage = nil
             storageLastRefreshed = Date()
             storageErrorMessage = nil
         } catch {
@@ -287,11 +425,24 @@ final class AppState {
                 try await Task.sleep(for: .seconds(2))
                 let info = try await apiClient.getStorageInfo()
                 applyStorageInfo(info)
+                isSessionValidated = true
+                authMessage = nil
                 storageLastRefreshed = Date()
                 storageErrorMessage = nil
+            } catch let apiError as KrevoAPIError {
+                KrevoConstants.logger.error("Storage refresh retry failed: \(apiError.localizedDescription)")
+                if case .unauthorized = apiError {
+                    await expireStoredSession(message: "Your saved session expired. Connect your account again.")
+                    return false
+                }
+                storageErrorMessage = storageFailureMessage(for: apiError)
+                scheduleReconnect(reason: "storage refresh failed")
+                await checkServerStatus()
+                return false
             } catch {
                 KrevoConstants.logger.error("Storage refresh retry failed: \(error.localizedDescription)")
-                storageErrorMessage = "Storage info is temporarily unavailable."
+                storageErrorMessage = storageFailureMessage(for: error)
+                scheduleReconnect(reason: "storage refresh failed")
                 await checkServerStatus()
                 return false
             }
@@ -313,9 +464,18 @@ final class AppState {
         guard !urls.isEmpty else { return }
 
         Task { @MainActor in
+            guard canStartUploads else {
+                handleBlockedUploadAttempt()
+                return
+            }
+
             if isStorageStale {
                 KrevoConstants.logger.warning("Storage info is stale — refreshing before preflight")
-                _ = await refreshStorage()
+                let refreshed = await refreshStorage()
+                guard refreshed, canStartUploads else {
+                    handleBlockedUploadAttempt()
+                    return
+                }
             }
 
             let expanded = expandURLs(urls)
@@ -480,6 +640,9 @@ final class AppState {
         maxFileSize = info.maxFileSize
         tier = info.tier
         plan = info.plan
+        accountCanUpload = info.canUpload
+        serverAccountStateRaw = info.accountState ?? ""
+        serverUpgradeMessage = info.upgradeMessage
         if let userName = Self.normalizedProfileValue(info.name) {
             self.userName = userName
         }
@@ -489,12 +652,104 @@ final class AppState {
         storageLoaded = true
     }
 
+    private func preserveAuthenticatedShell(for error: Error) {
+        hasStoredSession = true
+        isAuthenticated = true
+        isSessionValidated = false
+        authMessage = authFailureMessage(for: error)
+        storageErrorMessage = storageFailureMessage(for: error)
+        if case .authRequired = globalBanner {
+            globalBanner = nil
+        }
+        if isNetworkAvailable {
+            scheduleReconnect(reason: "session validation failed")
+        }
+    }
+
+    private func storageFailureMessage(for error: Error) -> String {
+        guard let apiError = error as? KrevoAPIError else {
+            return isNetworkAvailable
+                ? "Storage info is temporarily unavailable."
+                : "Reconnect to reload storage details."
+        }
+
+        switch apiError {
+        case .networkError:
+            return "Reconnect to reload storage details."
+        case .rateLimited:
+            return "Storage info is temporarily unavailable."
+        case .serverError:
+            return "Storage info is temporarily unavailable."
+        default:
+            return "Storage info is temporarily unavailable."
+        }
+    }
+
+    private func scheduleReconnect(reason: String) {
+        guard shouldPresentAuthenticatedShell else { return }
+        reconnectTask?.cancel()
+        reconnectTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            KrevoConstants.logger.info("Scheduling reconnect attempt: \(reason)")
+            try? await Task.sleep(for: .milliseconds(350))
+            guard self.isNetworkAvailable else { return }
+            guard self.shouldPresentAuthenticatedShell else { return }
+            await self.checkAuth()
+        }
+    }
+
+    private func clearLocalSession(preserveAuthMessage: Bool) {
+        isAuthenticated = false
+        isSessionValidated = false
+        hasStoredSession = false
+        storageUsed = 0
+        storageLimit = 0
+        maxFileSize = 0
+        storageLoaded = false
+        storageLastRefreshed = nil
+        tier = ""
+        plan = ""
+        userName = ""
+        userEmail = ""
+        accountCanUpload = true
+        serverAccountStateRaw = ""
+        serverUpgradeMessage = nil
+        storageErrorMessage = nil
+        if !preserveAuthMessage {
+            authMessage = nil
+        }
+        uploadTasks.removeAll()
+        recentCompleted.removeAll()
+        pendingQueue.removeAll()
+        runningCount = 0
+        showCompletionBanner = false
+        bannerDismissTask?.cancel()
+        bannerDismissTask = nil
+        globalBanner = nil
+    }
+
+    private func expireStoredSession(message: String) async {
+        reconnectTask?.cancel()
+        reconnectTask = nil
+        await apiClient.clearToken()
+        KeychainService.deleteToken()
+        clearLocalSession(preserveAuthMessage: true)
+        authMessage = message
+        globalBanner = .authRequired
+    }
+
     private static func normalizedProfileValue(_ value: String?) -> String? {
         guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines),
               !trimmed.isEmpty else {
             return nil
         }
         return trimmed
+    }
+
+    private func normalizedAccountStateValue(_ value: String) -> String {
+        value
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
     }
 
     /// Drain the pending queue, launching uploads up to the concurrency limit.
@@ -588,7 +843,7 @@ final class AppState {
                 id: task.id,
                 fileName: task.fileName,
                 fileSize: task.fileSize,
-                shareURL: nil,
+                shareURL: task.shareURL,
                 completionTime: completionTime,
                 fileId: fileId,
                 result: .completed,

@@ -21,7 +21,7 @@ struct MenuBarView: View {
         Group {
             if appState.isCheckingAuth {
                 loadingView
-            } else if appState.isAuthenticated {
+            } else if appState.shouldPresentAuthenticatedShell {
                 authenticatedView
             } else {
                 AuthView()
@@ -56,6 +56,12 @@ struct MenuBarView: View {
                 globalBannerView(banner)
                     .padding(.horizontal, 12)
                     .padding(.top, 10)
+            }
+
+            if let notice = sessionNotice {
+                notice
+                    .padding(.horizontal, 12)
+                    .padding(.top, appState.globalBanner == nil ? 10 : 8)
             }
 
             if appState.showCompletionBanner {
@@ -205,11 +211,17 @@ struct MenuBarView: View {
     }
 
     private var statusText: String {
+        if !appState.isNetworkAvailable { return "Offline" }
         if appState.hasActiveUploads {
             let count = appState.activeUploads.count
             return count == 1 ? "Uploading 1 file" : "Uploading \(count) files"
         }
-        if !appState.isNetworkAvailable { return "Offline" }
+        if case .readOnly(let reason) = appState.accountAccessState {
+            return reason.statusText
+        }
+        if !appState.isSessionValidated {
+            return "Reconnect to verify session"
+        }
         let failed = terminalTasks.filter { if case .failed = $0.state { return true } else { return false } }.count
         if failed > 0 {
             return failed == 1 ? "1 upload needs attention" : "\(failed) uploads need attention"
@@ -220,6 +232,8 @@ struct MenuBarView: View {
     private var statusColor: Color {
         if appState.hasActiveUploads { return Color.krevoAccentInk }
         if !appState.isNetworkAvailable { return .krevoAmber }
+        if appState.isReadOnlyAccount { return .krevoAmber }
+        if !appState.isSessionValidated { return .krevoAmber }
         let hasFailed = terminalTasks.contains { if case .failed = $0.state { return true } else { return false } }
         if hasFailed { return .krevoAmber }
         return .krevoGreen
@@ -253,6 +267,12 @@ struct MenuBarView: View {
             .padding(.top, 22)
             .padding(.bottom, 18)
 
+        if !appState.canStartUploads {
+            uploadAvailabilityCard
+                .padding(.horizontal, 14)
+                .padding(.bottom, 8)
+        }
+
         if appState.hasActiveUploads {
             sectionHeader(title: "Uploading now", actionTitle: nil, action: nil)
             VStack(spacing: 0) {
@@ -278,10 +298,12 @@ struct MenuBarView: View {
             }
         }
 
-        UploadDropZone(compact: appState.hasActiveUploads)
-            .padding(.horizontal, 14)
-            .padding(.top, 10)
-            .padding(.bottom, 4)
+        if appState.canStartUploads {
+            UploadDropZone(compact: appState.hasActiveUploads)
+                .padding(.horizontal, 14)
+                .padding(.top, 10)
+                .padding(.bottom, 4)
+        }
 
         if !appState.recentCompleted.isEmpty {
             sectionHeader(
@@ -321,7 +343,9 @@ struct MenuBarView: View {
         VStack(alignment: .leading, spacing: 0) {
             accountRow(label: "Name", value: displayName)
             Divider().background(Color.krevoBorder)
-            accountRow(label: "Plan", value: appState.tier.isEmpty ? "Free" : appState.tier.capitalized)
+            accountRow(label: "Plan", value: appState.accountPlanLabel)
+            Divider().background(Color.krevoBorder)
+            accountRow(label: "Access", value: accessSummary)
             Divider().background(Color.krevoBorder)
             accountRow(
                 label: "Storage",
@@ -332,6 +356,12 @@ struct MenuBarView: View {
         }
         .padding(.horizontal, 14)
         .padding(.bottom, 14)
+
+        if !appState.canStartUploads {
+            uploadAvailabilityCard
+                .padding(.horizontal, 14)
+                .padding(.bottom, 12)
+        }
 
         Button(action: { Task {
             isSigningOut = true
@@ -439,6 +469,7 @@ struct MenuBarView: View {
                 icon: "arrow.up",
                 title: "Upload",
                 style: .primary,
+                disabled: !appState.canStartUploads,
                 action: openFilePicker
             )
             ActionTile(
@@ -489,6 +520,45 @@ struct MenuBarView: View {
             if case .cancelled = task.state { return true }
             return false
         }
+    }
+
+    private var accessSummary: String {
+        switch appState.accountAccessState {
+        case .fullAccess:
+            return appState.isSessionValidated ? "Full access" : "Reconnect required"
+        case .readOnly(let reason):
+            return reason.title
+        case .unknown:
+            return appState.isSessionValidated ? "Unavailable" : "Reconnect required"
+        }
+    }
+
+    private var sessionNotice: AnyView? {
+        if appState.globalBanner != .networkOffline && !appState.isSessionValidated {
+            return AnyView(bannerCard(
+                icon: "arrow.clockwise.circle",
+                title: "Reconnect required",
+                message: appState.authMessage ?? "Reconnect to refresh your Krevo session.",
+                color: .krevoAmber
+            ))
+        } else if case .readOnly(let reason) = appState.accountAccessState {
+            return AnyView(bannerCard(
+                icon: "lock.fill",
+                title: reason.title,
+                message: reason.message,
+                color: .krevoAmber
+            ))
+        }
+        return nil
+    }
+
+    private var uploadAvailabilityCard: some View {
+        bannerCard(
+            icon: appState.isReadOnlyAccount ? "lock.fill" : "wifi.exclamationmark",
+            title: appState.isReadOnlyAccount ? "Uploads locked" : "Uploads unavailable",
+            message: appState.uploadAvailabilityMessage,
+            color: .krevoAmber
+        )
     }
 
     // MARK: - Banners (kept from previous implementation)
@@ -610,12 +680,23 @@ struct MenuBarView: View {
 
     private var versionString: String {
         let short = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
-        return "v\(short ?? "1.4")"
+        let releaseName = Bundle.main.object(forInfoDictionaryKey: "KrevoReleaseName") as? String
+        let version = short ?? "1.0"
+
+        if let releaseName, !releaseName.isEmpty {
+            return "v\(version) \(releaseName)"
+        }
+
+        return "v\(version)"
     }
 
     // MARK: - Actions
 
     private func openFilePicker() {
+        guard appState.canStartUploads else {
+            appState.handleBlockedUploadAttempt()
+            return
+        }
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = true
         panel.canChooseFiles = true
@@ -640,6 +721,10 @@ struct MenuBarView: View {
 
     private func handleRootDrop(_ providers: [NSItemProvider]) {
         Task { @MainActor in
+            guard appState.canStartUploads else {
+                appState.handleBlockedUploadAttempt()
+                return
+            }
             var urls: [URL] = []
             for provider in providers {
                 guard provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) else { continue }

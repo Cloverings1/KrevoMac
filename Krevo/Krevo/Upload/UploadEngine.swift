@@ -112,6 +112,46 @@ private actor ChunkConcurrencyController {
     }
 }
 
+/// Shared across all uploads — async wait (no spin) when the global RAM budget is exhausted.
+private actor GlobalChunkMemoryBudget {
+    private let capacity: Int
+    private var reservedBytes = 0
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    init(capacity: Int) {
+        self.capacity = max(1, capacity)
+    }
+
+    private func normalized(_ bytes: Int) -> Int {
+        max(1, min(bytes, capacity))
+    }
+
+    /// Reserves bytes and returns the normalized reservation (for matching `release`).
+    func acquire(_ bytes: Int) async throws -> Int {
+        let need = normalized(bytes)
+        while true {
+            try Task.checkCancellation()
+            if reservedBytes + need <= capacity {
+                reservedBytes += need
+                return need
+            }
+            await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+                waiters.append(cont)
+            }
+        }
+    }
+
+    func release(_ bytes: Int) {
+        let give = normalized(bytes)
+        reservedBytes = max(0, reservedBytes - give)
+        let pending = waiters
+        waiters.removeAll()
+        for w in pending {
+            w.resume()
+        }
+    }
+}
+
 /// Thread-safe presigned URL cache for a single upload.
 /// Each upload gets its own instance so concurrent uploads never interfere.
 /// URL resolution serializes only within this cache — not on the UploadEngine actor.
@@ -348,10 +388,24 @@ actor UploadEngine {
     private let apiClient: KrevoAPIClient
     private let chunkUploader: ChunkUploader
     private var activeOperations: [UUID: Task<Void, Never>] = [:]
+    private static let globalChunkMemoryBudget = GlobalChunkMemoryBudget(
+        capacity: KrevoConstants.maxMemoryBudget
+    )
 
     init(apiClient: KrevoAPIClient) {
         self.apiClient = apiClient
         self.chunkUploader = ChunkUploader(apiClient: apiClient)
+    }
+
+    private nonisolated static func expectedChunkReservationBytes(
+        for index: Int,
+        totalSize: Int64,
+        chunkSize: Int
+    ) -> Int {
+        let chunkOffset = Int64(index * chunkSize)
+        let remaining = max(0, totalSize - chunkOffset)
+        let reservation = min(Int64(chunkSize), remaining)
+        return max(1, Int(reservation))
     }
 
     // MARK: - Upload File
@@ -373,7 +427,7 @@ actor UploadEngine {
     private func executeUpload(task: UploadTask) async {
         let taskFileName = await MainActor.run { task.fileName }
         var initializedUpload: InitializedUploadContext?
-        await MainActor.run { task.state = .initializing }
+        let attemptID = await MainActor.run { task.beginUploadAttempt() }
 
         do {
             try Task.checkCancellation()
@@ -409,10 +463,13 @@ actor UploadEngine {
 
             try Task.checkCancellation()
 
-            // Store upload identifiers for cancellation
             await MainActor.run {
-                task.uploadId = initResponse.uploadId
-                task.uploadKey = initResponse.key
+                task.activateUpload(
+                    uploadId: initResponse.uploadId,
+                    uploadKey: initResponse.key,
+                    totalChunks: initResponse.totalChunks,
+                    attemptID: attemptID
+                )
             }
 
             // 2. Open file reader
@@ -421,12 +478,6 @@ actor UploadEngine {
                 chunkSize: initResponse.chunkSize
             )
             let totalChunks = initResponse.totalChunks
-
-            await MainActor.run {
-                task.totalChunks = totalChunks
-                task.state = .uploading
-                task.startTime = Date()
-            }
 
             // 3. Configure adaptive chunk concurrency based on memory budget and runtime signals.
             let concurrencyLimit = min(
@@ -530,7 +581,23 @@ actor UploadEngine {
             ) async throws -> CompletedChunkResult {
                 try Task.checkCancellation()
                 let startedAt = ContinuousClock.now
-                let chunkData = try reader.readChunk(at: idx)
+                let reservedChunkBytes = try await Self.globalChunkMemoryBudget.acquire(
+                    Self.expectedChunkReservationBytes(
+                        for: idx,
+                        totalSize: fileSize,
+                        chunkSize: initResponse.chunkSize
+                    )
+                )
+                defer {
+                    Task {
+                        await Self.globalChunkMemoryBudget.release(reservedChunkBytes)
+                    }
+                }
+
+                // Disk read off UploadEngine — pread is thread-safe; avoids blocking the orchestrator actor.
+                let chunkData = try await Task.detached(priority: .userInitiated) {
+                    try reader.readChunk(at: idx)
+                }.value
                 let chunkSizeBytes = Int64(chunkData.count)
                 let maxPresignedURLRefreshAttempts = 2
                 var refreshAttempts = 0
@@ -550,13 +617,7 @@ actor UploadEngine {
                                     await progressCoordinator.record(partNumber: partNumber, bytesSent: bytesSent)
                                     guard let pending = await progressCoordinator.flushIfNeeded() else { return }
                                     await MainActor.run {
-                                        for (partNumber, bytesSent) in pending {
-                                            task.updatePartialProgress(
-                                                partNumber: partNumber,
-                                                bytesSent: bytesSent
-                                            )
-                                        }
-                                        task.updateSpeed()
+                                        task.applyProgress(pending, attemptID: attemptID)
                                     }
                                 }
                             },
@@ -564,7 +625,10 @@ actor UploadEngine {
                                 Task {
                                     await progressCoordinator.reset(partNumber: partNumber)
                                     await MainActor.run {
-                                        task.resetPartialProgress(partNumber: partNumber)
+                                        task.resetPartialProgress(
+                                            partNumber: partNumber,
+                                            attemptID: attemptID
+                                        )
                                     }
                                 }
                             }
@@ -573,7 +637,8 @@ actor UploadEngine {
                         await MainActor.run {
                             task.markChunkCompleted(
                                 partNumber: partNumber,
-                                chunkSize: chunkSizeBytes
+                                chunkSize: chunkSizeBytes,
+                                attemptID: attemptID
                             )
                         }
 
@@ -595,7 +660,10 @@ actor UploadEngine {
                         await urlCache.invalidate(partNumber: partNumber)
                         await progressCoordinator.reset(partNumber: partNumber)
                         await MainActor.run {
-                            task.resetPartialProgress(partNumber: partNumber)
+                            task.resetPartialProgress(
+                                partNumber: partNumber,
+                                attemptID: attemptID
+                            )
                         }
 
                         KrevoConstants.uploadLogger.warning(
@@ -655,17 +723,12 @@ actor UploadEngine {
                         throttle.lastUpdate = now
                         if let pending = await progressCoordinator.flushIfNeeded(force: true) {
                             await MainActor.run {
-                                for (partNumber, bytesSent) in pending {
-                                    task.updatePartialProgress(
-                                        partNumber: partNumber,
-                                        bytesSent: bytesSent
-                                    )
-                                }
-                                task.completedChunks = count
+                                task.applyProgress(pending, attemptID: attemptID)
+                                task.setCompletedChunks(count, attemptID: attemptID)
                             }
                         } else {
                             await MainActor.run {
-                                task.completedChunks = count
+                                task.setCompletedChunks(count, attemptID: attemptID)
                             }
                         }
                     }
@@ -685,7 +748,7 @@ actor UploadEngine {
             try reader.validateIntegrity()
 
             // 9. Complete upload
-            await MainActor.run { task.state = .completing }
+            await MainActor.run { task.markCompleting(attemptID: attemptID) }
 
             let sortedParts = completedParts
                 .map(\.part)
@@ -699,23 +762,50 @@ actor UploadEngine {
                 contentType: contentType,
                 parentId: nil
             )
+            try Task.checkCancellation()
             initializedUpload = nil
 
             guard completeResponse.success else {
                 throw KrevoAPIError.serverError(statusCode: 500, message: "Upload finalization failed")
             }
 
-            let shareURL = completeResponse.shareURL ?? "https://www.krevo.io/file/\(completeResponse.fileId)"
-            await MainActor.run { task.markCompleted(fileId: completeResponse.fileId, shareURL: shareURL) }
+            let realShareURL: String?
+            do {
+                let shareLink = try await apiClient.createShareLink(fileId: completeResponse.fileId)
+                realShareURL = shareLink.url
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                KrevoConstants.uploadLogger.warning(
+                    "Share-link creation failed for \(taskFileName): \(error.localizedDescription)"
+                )
+                realShareURL = completeResponse.shareURL
+            }
+
+            try Task.checkCancellation()
+
+            await MainActor.run {
+                task.markCompleted(
+                    fileId: completeResponse.fileId,
+                    shareURL: realShareURL,
+                    attemptID: attemptID
+                )
+            }
 
         } catch is CancellationError {
             await abortRemoteUpload(initializedUpload, context: "cancellation for \(taskFileName)")
             KrevoConstants.uploadLogger.info("Upload cancelled: \(taskFileName)")
-            await MainActor.run { task.markCancelled() }
+            await MainActor.run { task.markCancelled(attemptID: attemptID) }
         } catch {
+            if Task.isCancelled {
+                await abortRemoteUpload(initializedUpload, context: "cancellation for \(taskFileName)")
+                KrevoConstants.uploadLogger.info("Upload cancelled during API phase: \(taskFileName)")
+                await MainActor.run { task.markCancelled(attemptID: attemptID) }
+                return
+            }
             await abortRemoteUpload(initializedUpload, context: "failed upload for \(taskFileName)")
             KrevoConstants.uploadLogger.error("Upload failed: \(taskFileName) — \(error.localizedDescription)")
-            await MainActor.run { task.markFailed(error) }
+            await MainActor.run { task.markFailed(error, attemptID: attemptID) }
         }
     }
 
