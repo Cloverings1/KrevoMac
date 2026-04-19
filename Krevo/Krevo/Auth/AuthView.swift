@@ -2,7 +2,12 @@ import SwiftUI
 
 struct AuthView: View {
     @Environment(AppState.self) private var appState
-    @State private var authManager = AuthManager.shared
+    // AuthManager is a MainActor singleton. Accessing it as a computed
+    // property (rather than wrapping it in @State) keeps SwiftUI's
+    // Observation tracking consistent across Debug and Release builds —
+    // @State with an @Observable singleton is an anti-pattern that can
+    // produce stale reads once the optimizer is involved.
+    private var authManager: AuthManager { AuthManager.shared }
 
     var body: some View {
         VStack(spacing: 0) {
