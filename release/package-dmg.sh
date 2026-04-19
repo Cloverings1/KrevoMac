@@ -9,6 +9,32 @@ ENTITLEMENTS_PATH="${REPO_ROOT}/Krevo/Krevo/Krevo.entitlements"
 CODESIGN_IDENTITY="${KREVO_CODESIGN_IDENTITY:--}"
 NOTARY_PROFILE="${KREVO_NOTARY_PROFILE:-}"
 
+app_entitlements() {
+  codesign --display --entitlements :- "$1" 2>/dev/null || true
+}
+
+app_profile_plist() {
+  local profile_path="$1/Contents/embedded.provisionprofile"
+  if [[ -f "${profile_path}" ]]; then
+    security cms -D -i "${profile_path}" 2>/dev/null || true
+  fi
+}
+
+app_has_get_task_allow() {
+  local entitlements
+  entitlements="$(app_entitlements "$1")"
+  grep -Fq "<key>com.apple.security.get-task-allow</key><true/>" <<<"${entitlements}"
+}
+
+app_has_development_profile() {
+  local profile_plist
+  profile_plist="$(app_profile_plist "$1")"
+  [[ -n "${profile_plist}" ]] || return 1
+
+  grep -Fq "<key>ProvisionedDevices</key>" <<<"${profile_plist}" \
+    || grep -Fq "Mac Team Provisioning Profile:" <<<"${profile_plist}"
+}
+
 usage() {
   cat <<'EOF'
 Usage: ./release/package-dmg.sh <version>
@@ -21,7 +47,7 @@ Output:
 
 Environment:
   KREVO_CODESIGN_IDENTITY  Optional signing identity. Defaults to ad-hoc signing (`-`).
-                           If the app already has a real signature, the script preserves it.
+                           If the app already has a Developer ID signature, the script preserves it.
                            Set to a Developer ID Application identity for production packaging.
   KREVO_NOTARY_PROFILE     Optional notarytool keychain profile. When set, the DMG is submitted
                            for notarization, then stapled and Gatekeeper-checked.
@@ -42,6 +68,7 @@ BUILD_DIR="${REPO_ROOT}/builds/${VERSION}"
 APP_PATH="${BUILD_DIR}/Krevo.app"
 DMG_PATH="${BUILD_DIR}/Krevo-${VERSION}.dmg"
 README_TEMPLATE="${SCRIPT_DIR}/README.txt.template"
+STAGING_APP_PATH=""
 
 if [[ ! -d "${APP_PATH}" ]]; then
   echo "error: missing app bundle at ${APP_PATH}" >&2
@@ -73,24 +100,31 @@ cleanup() {
 }
 trap cleanup EXIT
 
+STAGING_APP_PATH="${STAGING_DIR}/${APP_NAME}.app"
+ditto "${APP_PATH}" "${STAGING_APP_PATH}"
+xattr -dr com.apple.quarantine "${STAGING_APP_PATH}" 2>/dev/null || true
+
 if [[ "${CODESIGN_IDENTITY}" == "-" ]]; then
   NOTARIZATION_DESCRIPTION="not notarized"
 
-  if grep -Fq "Signature=adhoc" <<<"${APP_SIGNATURE_INFO}" || ! grep -Fq "TeamIdentifier=" <<<"${APP_SIGNATURE_INFO}"; then
-    SIGNING_DESCRIPTION="ad-hoc signature"
-    OPEN_INSTRUCTIONS="If macOS warns because this build is not notarized, Control-click the app, choose Open, then confirm."
-    echo "Ad-hoc signing ${APP_PATH}"
-    codesign --force --deep --sign - "${APP_PATH}"
-  else
+  if grep -Fq "Authority=Developer ID Application" <<<"${APP_SIGNATURE_INFO}"; then
     TEAM_ID="$(sed -n 's/^TeamIdentifier=//p' <<<"${APP_SIGNATURE_INFO}" | head -n 1)"
     if [[ -n "${TEAM_ID}" ]]; then
-      SIGNING_DESCRIPTION="existing app signature (TeamIdentifier ${TEAM_ID})"
+      SIGNING_DESCRIPTION="existing Developer ID signature (TeamIdentifier ${TEAM_ID})"
     else
-      SIGNING_DESCRIPTION="existing app signature"
+      SIGNING_DESCRIPTION="existing Developer ID signature"
     fi
-    OPEN_INSTRUCTIONS="Launch Krevo normally. This build keeps its existing local app signature, but it is not notarized."
-    echo "Preserving existing app signature for ${APP_PATH}"
+    OPEN_INSTRUCTIONS="Launch Krevo normally. This build keeps its existing Developer ID app signature, but the DMG itself is not notarized."
+    echo "Preserving existing Developer ID signature for ${STAGING_APP_PATH}"
     PRESERVED_EXISTING_SIGNATURE=1
+  else
+    SIGNING_DESCRIPTION="ad-hoc signature"
+    OPEN_INSTRUCTIONS="Internal testing only. On another Mac, Control-click the app, choose Open, then confirm. Do not share this build as a customer release."
+    if [[ -f "${STAGING_APP_PATH}/Contents/embedded.provisionprofile" ]]; then
+      rm -f "${STAGING_APP_PATH}/Contents/embedded.provisionprofile"
+    fi
+    echo "Ad-hoc signing ${STAGING_APP_PATH} for internal-only packaging"
+    codesign --force --deep --sign - "${STAGING_APP_PATH}"
   fi
 else
   SIGNING_DESCRIPTION="${CODESIGN_IDENTITY}"
@@ -107,9 +141,20 @@ else
     echo "Export the app with ./release/export-app.sh <version> before production packaging." >&2
     exit 1
   fi
+
+  if app_has_get_task_allow "${APP_PATH}"; then
+    echo "error: ${APP_PATH} still has com.apple.security.get-task-allow enabled" >&2
+    exit 1
+  fi
+
+  if app_has_development_profile "${APP_PATH}"; then
+    echo "error: ${APP_PATH} still embeds a development provisioning profile" >&2
+    echo "Export a clean Developer ID build before packaging a public release." >&2
+    exit 1
+  fi
 fi
 
-VERIFY_OUTPUT="$(codesign --verify --deep --strict "${APP_PATH}" 2>&1)" || VERIFY_STATUS=$?
+VERIFY_OUTPUT="$(codesign --verify --deep --strict "${STAGING_APP_PATH}" 2>&1)" || VERIFY_STATUS=$?
 VERIFY_STATUS="${VERIFY_STATUS:-0}"
 if [[ "${VERIFY_STATUS}" -ne 0 ]]; then
   if [[ "${PRESERVED_EXISTING_SIGNATURE}" -eq 1 && "${VERIFY_OUTPUT}" == *"CSSMERR_TP_NOT_TRUSTED"* ]]; then
@@ -129,8 +174,8 @@ sed \
   -e "s|__NOTARIZATION_DESCRIPTION__|$(escape_sed "${NOTARIZATION_DESCRIPTION}")|g" \
   -e "s|__OPEN_INSTRUCTIONS__|$(escape_sed "${OPEN_INSTRUCTIONS}")|g" \
   "${README_TEMPLATE}" > "${README_PATH}"
+xattr -dr com.apple.quarantine "${README_PATH}" 2>/dev/null || true
 
-ditto "${APP_PATH}" "${STAGING_DIR}/${APP_NAME}.app"
 ln -s /Applications "${STAGING_DIR}/Applications"
 
 if [[ -f "${DMG_PATH}" ]]; then

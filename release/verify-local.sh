@@ -12,7 +12,7 @@ usage() {
   cat <<'EOF'
 Usage: ./release/verify-local.sh <version>
 
-Runs the current shippable local verification lane:
+Runs the current local verification lane:
   1. Debug build
   2. Unit tests only (`KrevoTests`)
   3. Release build into builds/<version>
@@ -56,6 +56,10 @@ xcodebuild \
 
 cat <<EOF
 Local verification succeeded.
+
+This lane produces a local test build only.
+- builds/${VERSION}/Krevo.app is not a public-distribution artifact
+- Use ./release/build-distribution.sh ${VERSION} for Developer ID + notarization
 
 Manual smoke still required:
 - Launch the app

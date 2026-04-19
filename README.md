@@ -62,20 +62,20 @@ Chunked multipart transfers go **straight to Cloudflare R2** — your files neve
 
 ```mermaid
 flowchart LR
-    subgraph ui [Menu bar]
-        MB[MenuBarExtra]
-        POP[SwiftUI popover]
+    subgraph ui ["Menu bar"]
+        MB["MenuBarExtra"]
+        POP["SwiftUI popover"]
     end
 
-    subgraph state [Concurrency]
-        AS[@Observable AppState]
-        API[KrevoAPIClient actor]
-        UE[UploadEngine actor]
+    subgraph state ["Concurrency"]
+        AS["AppState (@Observable)"]
+        API["KrevoAPIClient actor"]
+        UE["UploadEngine actor"]
     end
 
-    subgraph upload [Per upload]
-        CACHE[PresignedURLCache actor]
-        TG[ThrowingTaskGroup chunks]
+    subgraph upload ["Per upload"]
+        CACHE["PresignedURLCache actor"]
+        TG["ThrowingTaskGroup chunks"]
     end
 
     MB --> POP --> AS
@@ -83,8 +83,8 @@ flowchart LR
     UE --> API
     UE --> CACHE
     UE --> TG
-    TG -->|PUT| R2[(R2 presigned URLs)]
-    API -->|HTTPS JSON| KAPI[(krevo.io/api)]
+    TG -->|PUT| R2[("R2 presigned URLs")]
+    API -->|HTTPS JSON| KAPI[("krevo.io/api")]
 ```
 
 - **`AppState`** — `@Observable` hub: queue, storage, auth shell, network reachability, banners.
