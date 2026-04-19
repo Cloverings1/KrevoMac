@@ -710,13 +710,8 @@ struct MenuBarView: View {
             appState.handleBlockedUploadAttempt()
             return
         }
-        let panel = NSOpenPanel()
-        panel.allowsMultipleSelection = true
-        panel.canChooseFiles = true
-        panel.canChooseDirectories = true
-        panel.title = "Select Files or Folders to Upload"
-        if panel.runModal() == .OK {
-            appState.startUpload(urls: panel.urls)
+        FilePicker.presentUploadPicker { urls in
+            appState.startUpload(urls: urls)
         }
     }
 
