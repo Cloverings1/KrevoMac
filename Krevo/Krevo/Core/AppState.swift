@@ -386,10 +386,19 @@ final class AppState {
         KeychainService.deleteToken()
 
         guard let token else { return }
-        Task {
-            let revocationClient = KrevoAPIClient()
-            await revocationClient.setToken(token)
-            try? await revocationClient.revokeToken()
+        // Await revocation with a short timeout so the server actually invalidates
+        // the device token before the user walks away (or quits the app).
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask {
+                let revocationClient = KrevoAPIClient()
+                await revocationClient.setToken(token)
+                try? await revocationClient.revokeToken()
+            }
+            group.addTask {
+                try? await Task.sleep(for: .seconds(3))
+            }
+            await group.next()
+            group.cancelAll()
         }
     }
 
