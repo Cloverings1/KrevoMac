@@ -38,7 +38,7 @@ nonisolated enum KrevoAPIError: Error, LocalizedError, Sendable {
 
 // MARK: - Response Types
 
-nonisolated struct StorageInfo: Codable, Sendable {
+nonisolated struct StorageInfo: Decodable, Sendable {
     let used: Int64
     let limit: Int64
     let plan: String
@@ -46,6 +46,45 @@ nonisolated struct StorageInfo: Codable, Sendable {
     let maxFileSize: Int64
     let retentionDays: Int
     let name: String?
+    let email: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case used
+        case limit
+        case plan
+        case tier
+        case maxFileSize
+        case retentionDays
+        case name
+        case fullName
+        case displayName
+        case userName
+        case email
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        used = try container.decode(Int64.self, forKey: .used)
+        limit = try container.decode(Int64.self, forKey: .limit)
+        plan = try container.decode(String.self, forKey: .plan)
+        tier = try container.decode(String.self, forKey: .tier)
+        maxFileSize = try container.decode(Int64.self, forKey: .maxFileSize)
+        retentionDays = try container.decode(Int.self, forKey: .retentionDays)
+        let decodedName = Self.normalizedValue(try container.decodeIfPresent(String.self, forKey: .name))
+        let decodedFullName = Self.normalizedValue(try container.decodeIfPresent(String.self, forKey: .fullName))
+        let decodedDisplayName = Self.normalizedValue(try container.decodeIfPresent(String.self, forKey: .displayName))
+        let decodedUserName = Self.normalizedValue(try container.decodeIfPresent(String.self, forKey: .userName))
+        name = decodedName ?? decodedFullName ?? decodedDisplayName ?? decodedUserName
+        email = Self.normalizedValue(try container.decodeIfPresent(String.self, forKey: .email))
+    }
+
+    private static func normalizedValue(_ value: String?) -> String? {
+        guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty else {
+            return nil
+        }
+        return trimmed
+    }
 }
 
 nonisolated struct UploadInitResponse: Codable, Sendable {

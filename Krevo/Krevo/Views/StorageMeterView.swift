@@ -29,6 +29,13 @@ struct StorageMeterView: View {
                     .foregroundStyle(Color.krevoQuaternary)
                     .padding(.top, 3)
 
+                if let storageErrorMessage = appState.storageErrorMessage {
+                    Text(storageErrorMessage)
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.krevoAmber)
+                        .padding(.top, 6)
+                }
+
                 if appState.storageLoaded {
                     HStack(spacing: 8) {
                         planBadge
@@ -94,6 +101,9 @@ struct StorageMeterView: View {
 
     private var accessibilityLabel: String {
         guard appState.storageLoaded else { return "Storage loading" }
+        if let storageErrorMessage = appState.storageErrorMessage {
+            return "\(usedPrimary) used of \(limitText). \(remainingText). \(tierLabel) plan. \(storageErrorMessage)"
+        }
         return "\(usedPrimary) used of \(limitText). \(remainingText). \(tierLabel) plan."
     }
 }

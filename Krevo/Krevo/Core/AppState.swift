@@ -34,6 +34,7 @@ final class AppState {
     var storageLoaded = false
     var storageErrorMessage: String?
     var userName: String = ""
+    var userEmail: String = ""
 
     // MARK: - Network
 
@@ -150,6 +151,12 @@ final class AppState {
         max(0, storageLimit - storageUsed - reservedUploadBytes)
     }
 
+    var accountDisplayName: String {
+        if !userName.isEmpty { return userName }
+        if !userEmail.isEmpty { return userEmail }
+        return "Your account"
+    }
+
     // MARK: - Auth Actions
 
     func checkAuth() async {
@@ -204,6 +211,8 @@ final class AppState {
             authMessage = "Could not save your session locally. Check Keychain access and retry."
             return
         }
+        userName = ""
+        userEmail = ""
         await apiClient.setToken(token)
         await checkAuth()
     }
@@ -227,6 +236,7 @@ final class AppState {
         tier = ""
         plan = ""
         userName = ""
+        userEmail = ""
         storageErrorMessage = nil
         hasStoredSession = false
         authMessage = nil
@@ -470,8 +480,21 @@ final class AppState {
         maxFileSize = info.maxFileSize
         tier = info.tier
         plan = info.plan
-        userName = info.name ?? ""
+        if let userName = Self.normalizedProfileValue(info.name) {
+            self.userName = userName
+        }
+        if let userEmail = Self.normalizedProfileValue(info.email) {
+            self.userEmail = userEmail
+        }
         storageLoaded = true
+    }
+
+    private static func normalizedProfileValue(_ value: String?) -> String? {
+        guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty else {
+            return nil
+        }
+        return trimmed
     }
 
     /// Drain the pending queue, launching uploads up to the concurrency limit.

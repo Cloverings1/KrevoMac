@@ -7,6 +7,7 @@ struct MenuBarView: View {
     @Environment(AppState.self) private var appState
     @State private var isSigningOut = false
     @State private var showCopiedBanner = false
+    @State private var copiedBannerGeneration: UInt64 = 0
     @State private var activeTab: PanelTab = .activity
     @State private var rootDropTargeted = false
 
@@ -131,7 +132,7 @@ struct MenuBarView: View {
                     .kerning(-0.2)
 
                 HStack(spacing: 7) {
-                    BreathingDot()
+                    BreathingDot(color: statusColor)
                     Text(statusText)
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(statusColor)
@@ -151,7 +152,7 @@ struct MenuBarView: View {
                     )
             }
             .buttonStyle(.plain)
-            .help("Settings")
+            .help("Open dashboard in browser")
         }
         .padding(.horizontal, 18)
         .padding(.top, 16)
@@ -185,14 +186,22 @@ struct MenuBarView: View {
     }
 
     private var initials: String {
-        guard !appState.userName.isEmpty else { return "K" }
-        let parts = appState.userName.split(separator: " ").prefix(2)
+        let source: String
+        if !appState.userName.isEmpty {
+            source = appState.userName
+        } else if !appState.userEmail.isEmpty {
+            source = appState.userEmail.components(separatedBy: "@").first ?? appState.userEmail
+        } else {
+            return "K"
+        }
+
+        let parts = source.split(separator: " ").prefix(2)
         let chars = parts.compactMap { $0.first.map(String.init) }
         return chars.isEmpty ? "K" : chars.joined().uppercased()
     }
 
     private var displayName: String {
-        appState.userName.isEmpty ? "Krevo user" : appState.userName
+        appState.accountDisplayName
     }
 
     private var statusText: String {
@@ -277,7 +286,7 @@ struct MenuBarView: View {
         if !appState.recentCompleted.isEmpty {
             sectionHeader(
                 title: "Recently synced",
-                actionTitle: "Open folder ↗",
+                actionTitle: "Open dashboard ↗",
                 action: openKrevoWeb
             )
             filesList(tasks: Array(appState.recentCompleted.prefix(4)))
@@ -290,7 +299,7 @@ struct MenuBarView: View {
     private var filesTab: some View {
         sectionHeader(
             title: "Recently synced",
-            actionTitle: "Open folder ↗",
+            actionTitle: "Open dashboard ↗",
             action: openKrevoWeb
         )
         if appState.recentCompleted.isEmpty {
@@ -434,7 +443,7 @@ struct MenuBarView: View {
             )
             ActionTile(
                 icon: "folder",
-                title: "Open folder",
+                title: "Open dashboard",
                 style: .normal,
                 action: openKrevoWeb
             )
@@ -544,10 +553,16 @@ struct MenuBarView: View {
         .padding(.horizontal, 12).padding(.vertical, 8)
         .background(RoundedRectangle(cornerRadius: 8).fill(Color.krevoGreen.opacity(0.08)))
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.krevoGreen.opacity(0.2), lineWidth: 1))
+        .onChange(of: appState.completedFileName) { _, _ in
+            copiedBannerGeneration &+= 1
+            showCopiedBanner = false
+        }
         .onTapGesture {
             if let url = appState.completedShareURL {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(url, forType: .string)
+                copiedBannerGeneration &+= 1
+                let generation = copiedBannerGeneration
                 showCopiedBanner = true
                 // Reset the banner's dismissal timer so the "Link copied!" label
                 // stays visible for the full 1.5s instead of racing with the
@@ -559,6 +574,7 @@ struct MenuBarView: View {
                 )
                 Task { @MainActor in
                     try? await Task.sleep(for: .seconds(1.5))
+                    guard copiedBannerGeneration == generation else { return }
                     showCopiedBanner = false
                 }
             } else {
@@ -581,7 +597,7 @@ struct MenuBarView: View {
             }
             Spacer()
             HStack(spacing: 4) {
-                FootButton(icon: "gearshape", tooltip: "Preferences", action: openPreferences)
+                FootButton(icon: "gearshape", tooltip: "Open dashboard", action: openPreferences)
             }
         }
         .padding(.horizontal, 14)
@@ -694,13 +710,15 @@ private struct TabPill: View {
 // that could stack on popover reopens and read as 'weird' to the eye —
 // a steady indicator suits the 'All caught up' state better.
 private struct BreathingDot: View {
+    let color: Color
+
     var body: some View {
         ZStack {
             Circle()
-                .fill(Color.krevoGreen.opacity(0.18))
+                .fill(color.opacity(0.18))
                 .frame(width: 13, height: 13)
             Circle()
-                .fill(Color.krevoGreen)
+                .fill(color)
                 .frame(width: 7, height: 7)
         }
         .frame(width: 13, height: 13)

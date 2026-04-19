@@ -701,6 +701,10 @@ actor UploadEngine {
             )
             initializedUpload = nil
 
+            guard completeResponse.success else {
+                throw KrevoAPIError.serverError(statusCode: 500, message: "Upload finalization failed")
+            }
+
             let shareURL = completeResponse.shareURL ?? "https://www.krevo.io/file/\(completeResponse.fileId)"
             await MainActor.run { task.markCompleted(fileId: completeResponse.fileId, shareURL: shareURL) }
 
