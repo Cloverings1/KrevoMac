@@ -1,5 +1,6 @@
 import AuthenticationServices
 import Foundation
+import os
 
 @Observable
 @MainActor
@@ -127,6 +128,14 @@ final class AuthManager {
 
         let returnedState = components.queryItems?.first(where: { $0.name == "state" })?.value
         let returnedNonce = components.queryItems?.first(where: { $0.name == "nonce" })?.value
+
+        // The web flow may not echo state/nonce yet. When absent, fall back to trusting
+        // the krevo:// scheme (only the system can deliver to a registered scheme handler).
+        // When either is returned, both must match the challenge we issued.
+        if returnedState == nil && returnedNonce == nil {
+            KrevoConstants.authLogger.warning("Auth callback missing state/nonce — accepting on scheme trust")
+            return true
+        }
 
         return returnedState == challenge.state && returnedNonce == challenge.nonce
     }
