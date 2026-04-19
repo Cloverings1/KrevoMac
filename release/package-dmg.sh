@@ -21,6 +21,7 @@ Output:
 
 Environment:
   KREVO_CODESIGN_IDENTITY  Optional signing identity. Defaults to ad-hoc signing (`-`).
+                           If the app already has a real signature, the script preserves it.
                            Set to a Developer ID Application identity for production packaging.
   KREVO_NOTARY_PROFILE     Optional notarytool keychain profile. When set, the DMG is submitted
                            for notarization, then stapled and Gatekeeper-checked.
@@ -53,6 +54,8 @@ if [[ ! -f "${README_TEMPLATE}" ]]; then
   exit 1
 fi
 
+APP_SIGNATURE_INFO="$(codesign -dvvv "${APP_PATH}" 2>&1 || true)"
+
 if [[ "${CODESIGN_IDENTITY}" != "-" && ! -f "${ENTITLEMENTS_PATH}" ]]; then
   echo "error: missing entitlements file at ${ENTITLEMENTS_PATH}" >&2
   exit 1
@@ -64,17 +67,31 @@ if [[ -n "${NOTARY_PROFILE}" && "${CODESIGN_IDENTITY}" == "-" ]]; then
 fi
 
 STAGING_DIR="$(mktemp -d "${TMPDIR:-/tmp}/krevo-dmg.${VERSION}.XXXXXX")"
+PRESERVED_EXISTING_SIGNATURE=0
 cleanup() {
   rm -rf "${STAGING_DIR}"
 }
 trap cleanup EXIT
 
 if [[ "${CODESIGN_IDENTITY}" == "-" ]]; then
-  SIGNING_DESCRIPTION="ad-hoc signature"
   NOTARIZATION_DESCRIPTION="not notarized"
-  OPEN_INSTRUCTIONS="If macOS warns because this build is not notarized, Control-click the app, choose Open, then confirm."
-  echo "Ad-hoc signing ${APP_PATH}"
-  codesign --force --deep --sign - "${APP_PATH}"
+
+  if grep -Fq "Signature=adhoc" <<<"${APP_SIGNATURE_INFO}" || ! grep -Fq "TeamIdentifier=" <<<"${APP_SIGNATURE_INFO}"; then
+    SIGNING_DESCRIPTION="ad-hoc signature"
+    OPEN_INSTRUCTIONS="If macOS warns because this build is not notarized, Control-click the app, choose Open, then confirm."
+    echo "Ad-hoc signing ${APP_PATH}"
+    codesign --force --deep --sign - "${APP_PATH}"
+  else
+    TEAM_ID="$(sed -n 's/^TeamIdentifier=//p' <<<"${APP_SIGNATURE_INFO}" | head -n 1)"
+    if [[ -n "${TEAM_ID}" ]]; then
+      SIGNING_DESCRIPTION="existing app signature (TeamIdentifier ${TEAM_ID})"
+    else
+      SIGNING_DESCRIPTION="existing app signature"
+    fi
+    OPEN_INSTRUCTIONS="Launch Krevo normally. This build keeps its existing local app signature, but it is not notarized."
+    echo "Preserving existing app signature for ${APP_PATH}"
+    PRESERVED_EXISTING_SIGNATURE=1
+  fi
 else
   SIGNING_DESCRIPTION="${CODESIGN_IDENTITY}"
   if [[ -n "${NOTARY_PROFILE}" ]]; then
@@ -85,7 +102,6 @@ else
     OPEN_INSTRUCTIONS="This build is Developer ID signed, but macOS may still warn until it is notarized."
   fi
 
-  APP_SIGNATURE_INFO="$(codesign -dvvv "${APP_PATH}" 2>&1 || true)"
   if ! grep -Fq "Authority=Developer ID Application" <<<"${APP_SIGNATURE_INFO}"; then
     echo "error: ${APP_PATH} is not signed with a Developer ID Application certificate" >&2
     echo "Export the app with ./release/export-app.sh <version> before production packaging." >&2
@@ -93,7 +109,17 @@ else
   fi
 fi
 
-codesign --verify --deep --strict "${APP_PATH}"
+VERIFY_OUTPUT="$(codesign --verify --deep --strict "${APP_PATH}" 2>&1)" || VERIFY_STATUS=$?
+VERIFY_STATUS="${VERIFY_STATUS:-0}"
+if [[ "${VERIFY_STATUS}" -ne 0 ]]; then
+  if [[ "${PRESERVED_EXISTING_SIGNATURE}" -eq 1 && "${VERIFY_OUTPUT}" == *"CSSMERR_TP_NOT_TRUSTED"* ]]; then
+    echo "warning: preserving existing local app signature despite trust verification error:" >&2
+    echo "${VERIFY_OUTPUT}" >&2
+  else
+    echo "${VERIFY_OUTPUT}" >&2
+    exit "${VERIFY_STATUS}"
+  fi
+fi
 
 README_PATH="${STAGING_DIR}/README.txt"
 sed \
