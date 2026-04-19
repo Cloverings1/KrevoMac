@@ -69,6 +69,7 @@ final class AppState {
     var isSessionValidated = false
     var authMessage: String?
     private var hasInitialized = false
+    private var storedDeviceToken: String?
 
     // MARK: - Storage
 
@@ -317,11 +318,14 @@ final class AppState {
         isCheckingAuth = true
         defer { isCheckingAuth = false }
 
-        guard let token = KeychainService.loadToken() else {
+        let token = storedDeviceToken ?? KeychainService.loadToken()
+        guard let token else {
+            storedDeviceToken = nil
             clearLocalSession(preserveAuthMessage: false)
             return
         }
 
+        storedDeviceToken = token
         hasStoredSession = true
         await apiClient.setToken(token)
 
@@ -358,6 +362,7 @@ final class AppState {
             authMessage = "Could not save your session locally. Check Keychain access and retry."
             return
         }
+        storedDeviceToken = token
         userName = ""
         userEmail = ""
         storageErrorMessage = nil
@@ -372,7 +377,8 @@ final class AppState {
         reconnectTask?.cancel()
         reconnectTask = nil
         await abortAllUploads()
-        let token = KeychainService.loadToken()
+        let token = storedDeviceToken ?? KeychainService.loadToken()
+        storedDeviceToken = nil
 
         clearLocalSession(preserveAuthMessage: false)
         Task { await historyStore.clear() }
@@ -734,6 +740,7 @@ final class AppState {
         isAuthenticated = false
         isSessionValidated = false
         hasStoredSession = false
+        storedDeviceToken = nil
         storageUsed = 0
         storageLimit = 0
         maxFileSize = 0
