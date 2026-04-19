@@ -274,8 +274,8 @@ struct MenuBarView: View {
     private var activityTab: some View {
         StorageMeterView()
             .padding(.horizontal, 20)
-            .padding(.top, 22)
-            .padding(.bottom, 18)
+            .padding(.top, 18)
+            .padding(.bottom, 12)
 
         if !appState.canStartUploads {
             uploadAvailabilityCard
@@ -347,8 +347,8 @@ struct MenuBarView: View {
     private var accountTab: some View {
         StorageMeterView()
             .padding(.horizontal, 20)
-            .padding(.top, 22)
-            .padding(.bottom, 18)
+            .padding(.top, 18)
+            .padding(.bottom, 12)
 
         VStack(alignment: .leading, spacing: 0) {
             accountRow(label: "Name", value: displayName)
