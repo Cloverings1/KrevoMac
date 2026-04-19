@@ -29,23 +29,31 @@ struct KrevoApp: App {
 class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     private var rightClickMonitor: Any?
 
+    private var hasRepliedToTerminate = false
+
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         // Abort active uploads so the server can release storage quota.
-        // Use async termination to avoid blocking with DispatchSemaphore.
         Task { @MainActor in
             await AppState.shared.abortAllUploads()
-            NSApp.reply(toApplicationShouldTerminate: true)
+            self.replyToTerminateOnce()
         }
 
         // Safety timeout — if cleanup takes longer than 5s, terminate anyway
-        Task.detached {
+        Task.detached { [weak self] in
             try? await Task.sleep(for: .seconds(5))
             await MainActor.run {
-                NSApp.reply(toApplicationShouldTerminate: true)
+                self?.replyToTerminateOnce()
             }
         }
 
         return .terminateLater
+    }
+
+    @MainActor
+    private func replyToTerminateOnce() {
+        guard !hasRepliedToTerminate else { return }
+        hasRepliedToTerminate = true
+        NSApp.reply(toApplicationShouldTerminate: true)
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
