@@ -487,7 +487,18 @@ final class AppState {
             let expanded = expandURLs(urls)
             var remaining = storageLimit > 0 ? max(0, storageLimit - storageUsed - reservedUploadBytes) : Int64.max
 
+            let inFlightPaths = Set(
+                (activeUploads + pendingQueue).map(\.fileURL.path)
+            )
+
             for file in expanded {
+                if inFlightPaths.contains(file.url.path) {
+                    KrevoConstants.uploadLogger.notice(
+                        "Skipping duplicate upload for \(file.url.lastPathComponent, privacy: .public)"
+                    )
+                    continue
+                }
+
                 let task: UploadTask
 
                 do {
@@ -499,6 +510,12 @@ final class AppState {
                         relativePath: file.relativePath
                     )
                     uploadTasks.insert(failed, at: 0)
+                    continue
+                }
+
+                if task.fileSize <= 0 {
+                    task.state = .failed("Empty files can't be uploaded.")
+                    uploadTasks.insert(task, at: 0)
                     continue
                 }
 
