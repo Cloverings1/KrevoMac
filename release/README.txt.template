@@ -1,0 +1,15 @@
+Krevo for Mac __VERSION__
+=========================
+
+This disk image contains a __SIGNING_DESCRIPTION__ build of __APP_NAME__ for Mac.
+
+Install
+-------
+1. Drag __APP_NAME__.app into Applications.
+2. __OPEN_INSTRUCTIONS__
+
+Notes
+-----
+- Notarization status: __NOTARIZATION_DESCRIPTION__
+- This package was assembled with Apple's codesign, hdiutil, and optional notarytool flow.
+- Replace older local test builds if you want to ensure you are opening this exact version.

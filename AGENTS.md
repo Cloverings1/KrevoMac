@@ -25,16 +25,39 @@ xcodebuild -project Krevo.xcodeproj -scheme Krevo -configuration Debug build
 Release builds go to `/Users/jonas/Desktop/krevomac/builds/` with versioned directories.
 
 ```bash
-# Build a release candidate
-cd Krevo
-xcodebuild -project Krevo.xcodeproj -scheme Krevo -configuration Release build \
-  CONFIGURATION_BUILD_DIR=/Users/jonas/Desktop/krevomac/builds/<version>
+# Export a production-signed app
+./release/export-app.sh <version>
 ```
 
+`release/export-app.sh` creates `builds/<version>/Krevo.xcarchive` and exports `builds/<version>/Krevo.app` via `release/ExportOptions.plist`.
+
+DMG packaging is handled by the native script in `release/package-dmg.sh`.
+
+```bash
+./release/package-dmg.sh <version>
+```
+
+- The script expects `builds/<version>/Krevo.app` to already exist from the release build step
+- Packaging flow is zero-dependency and uses only Apple tooling: `codesign`, `hdiutil`, and optional `notarytool`/`stapler`
+- Output DMG path: `builds/<version>/Krevo-<version>.dmg`
+- The script stages `Krevo.app`, an `/Applications` symlink, and a generated `README.txt` inside the DMG
+- Default behavior is ad-hoc signing for local/internal distribution
+- For production packaging, provide `KREVO_CODESIGN_IDENTITY="Developer ID Application: ..."` and `KREVO_NOTARY_PROFILE="<profile>"`
+
+## Verification
+
+```bash
+./release/verify-local.sh <version>
+```
+
+- Runs the current shippable local gate: Debug build, `KrevoTests`, and Release build into `builds/<version>/`
+- Manual smoke still required for the menu bar UX before shipping
+- `KrevoUITests` is currently non-blocking boilerplate and should not be treated as a release gate
+
 - Keep `MARKETING_VERSION` aligned with the release directory name and bump `CURRENT_PROJECT_VERSION` monotonically
-- Directory naming: `builds/<MARKETING_VERSION>/` (for example `builds/1.5.1/`)
+- Directory naming: `builds/<MARKETING_VERSION>/` (for example `builds/1.8/`)
 - When asked to "make a build", create the next version from the existing `builds/` sequence
-- Current metadata baseline: **1.5.1 (7)**
+- Current metadata baseline: **1.8 (9)**
 - Zero third-party dependencies — Apple frameworks only
 - `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor` is set project-wide
 

@@ -170,6 +170,89 @@ xcodebuild -project Krevo.xcodeproj -scheme Krevo -configuration Debug build
 
 Requires Xcode 26.2+. The app targets macOS 26.2. Signing team: `VJX635MVWF`.
 
+## Release Packaging
+
+Release app bundles are built into `builds/<version>/`.
+
+Production export flow:
+
+```bash
+cd /Users/jonas/Desktop/krevomac
+./release/export-app.sh <version>
+```
+
+Once `builds/<version>/Krevo.app` exists, package a DMG with the native script:
+
+```bash
+cd /Users/jonas/Desktop/krevomac
+./release/package-dmg.sh <version>
+```
+
+What the script does:
+
+- Preserves the exported app signature for production packaging, or falls back to ad-hoc signing for local/internal builds
+- Verifies the app signature with `codesign --verify --deep --strict`
+- Stages `Krevo.app`, an `/Applications` shortcut, and a generated `README.txt`
+- Builds `builds/<version>/Krevo-<version>.dmg` with `hdiutil`
+- Optionally signs the DMG, submits it to Apple notarization, staples it, and Gatekeeper-checks it
+
+Internal/local package flow:
+
+```bash
+cd /Users/jonas/Desktop/krevomac/Krevo
+xcodebuild -project Krevo.xcodeproj -scheme Krevo -configuration Release build \
+  CONFIGURATION_BUILD_DIR=/Users/jonas/Desktop/krevomac/builds/<version>
+
+cd /Users/jonas/Desktop/krevomac
+./release/package-dmg.sh <version>
+```
+
+Production package flow:
+
+```bash
+cd /Users/jonas/Desktop/krevomac
+./release/export-app.sh <version>
+
+KREVO_CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
+KREVO_NOTARY_PROFILE="krevo-notary" \
+./release/package-dmg.sh <version>
+```
+
+Notes:
+
+- This flow uses only Apple-provided tools. No third-party packaging dependencies are required.
+- If `KREVO_CODESIGN_IDENTITY` is unset, the script falls back to ad-hoc signing for local/internal distribution.
+- `release/export-app.sh` uses `release/ExportOptions.plist` and expects Xcode to have access to the correct `Developer ID Application` certificate.
+- If `KREVO_NOTARY_PROFILE` is set, the script submits the DMG with `xcrun notarytool`, staples it, and runs `spctl` against the final artifact.
+- Production distribution still requires the proper Apple credentials on the machine: a `Developer ID Application` certificate plus a working notarytool keychain profile.
+- The DMG instructions come from `release/README.txt.template`, which the script renders into the staging folder as `README.txt`.
+
+## Verification
+
+Current local release gate:
+
+```bash
+cd /Users/jonas/Desktop/krevomac
+./release/verify-local.sh <version>
+```
+
+This runs:
+
+- `xcodebuild` Debug build
+- `xcodebuild` unit tests for `KrevoTests`
+- `xcodebuild` Release build into `builds/<version>`
+
+Then do a manual menu-bar smoke pass:
+
+- Launch the app
+- Verify the status item appears
+- Open the popover
+- Verify the signed-out or signed-in shell renders
+- Verify the file picker / drag target is reachable
+- Quit the app cleanly
+
+The current `KrevoUITests` target is stock Xcode scaffolding and is not treated as a release-blocking lane yet.
+
 ## Config
 
 | Key | Value |
