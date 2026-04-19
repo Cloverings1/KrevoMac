@@ -27,6 +27,8 @@ struct KrevoApp: App {
 
 // Handle krevo:// URL scheme via Apple Events (MenuBarExtra doesn't support .onOpenURL)
 class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
+    private var rightClickMonitor: Any?
+
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         // Abort active uploads so the server can release storage quota.
         // Use async termination to avoid blocking with DispatchSemaphore.
@@ -63,6 +65,47 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         Task { @MainActor in
             await AppState.shared.initialize()
         }
+
+        installStatusItemRightClickMenu()
+    }
+
+    // MARK: - Status item right-click menu
+
+    private func installStatusItemRightClickMenu() {
+        rightClickMonitor = NSEvent.addLocalMonitorForEvents(matching: .rightMouseDown) { [weak self] event in
+            guard let self,
+                  let window = event.window,
+                  String(describing: type(of: window)).contains("StatusBar")
+            else { return event }
+            self.presentStatusItemMenu(in: window)
+            return nil
+        }
+    }
+
+    private func presentStatusItemMenu(in window: NSWindow) {
+        let menu = NSMenu()
+        let quit = NSMenuItem(title: "Quit Krevo", action: #selector(quitFromStatusItem), keyEquivalent: "q")
+        quit.target = self
+        menu.addItem(quit)
+        let location = NSPoint(x: 0, y: window.frame.height)
+        let mouseEvent = NSEvent.mouseEvent(
+            with: .rightMouseDown,
+            location: location,
+            modifierFlags: [],
+            timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: window.windowNumber,
+            context: nil,
+            eventNumber: 0,
+            clickCount: 1,
+            pressure: 1
+        )
+        if let mouseEvent {
+            NSMenu.popUpContextMenu(menu, with: mouseEvent, for: window.contentView ?? NSView())
+        }
+    }
+
+    @objc private func quitFromStatusItem() {
+        NSApp.terminate(nil)
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {

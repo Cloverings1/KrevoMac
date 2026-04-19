@@ -12,7 +12,7 @@ struct MenuBarView: View {
     @State private var rootDropTargeted = false
 
     enum PanelTab: String, CaseIterable, Identifiable {
-        case activity, files, account
+        case activity, account
         var id: String { rawValue }
         var title: String { rawValue.capitalized }
     }
@@ -76,8 +76,6 @@ struct MenuBarView: View {
                     switch activeTab {
                     case .activity:
                         activityTab
-                    case .files:
-                        filesTab
                     case .account:
                         accountTab
                     }
@@ -132,7 +130,7 @@ struct MenuBarView: View {
             avatar
 
             VStack(alignment: .leading, spacing: 1) {
-                Text(displayName)
+                Text(welcomeText)
                     .font(.system(size: 15, weight: .semibold))
                     .foregroundStyle(Color.krevoPrimary)
                     .kerning(-0.2)
@@ -208,6 +206,18 @@ struct MenuBarView: View {
 
     private var displayName: String {
         appState.accountDisplayName
+    }
+
+    private var welcomeText: String {
+        if !appState.userName.isEmpty,
+           let first = appState.userName.split(whereSeparator: { $0.isWhitespace }).first {
+            return "Welcome, \(first)"
+        }
+        if !appState.userEmail.isEmpty,
+           let local = appState.userEmail.split(separator: "@").first, !local.isEmpty {
+            return "Welcome, \(local.capitalized)"
+        }
+        return "Welcome"
     }
 
     private var statusText: String {
@@ -315,10 +325,10 @@ struct MenuBarView: View {
         }
     }
 
-    // MARK: - Files Tab
+    // MARK: - Files Section
 
     @ViewBuilder
-    private var filesTab: some View {
+    private var filesSection: some View {
         sectionHeader(
             title: "Recently synced",
             actionTitle: "Open dashboard ↗",
@@ -362,6 +372,9 @@ struct MenuBarView: View {
                 .padding(.horizontal, 14)
                 .padding(.bottom, 12)
         }
+
+        filesSection
+            .padding(.bottom, 8)
 
         Button(action: { Task {
             isSigningOut = true
@@ -901,8 +914,10 @@ private struct FootButton: View {
 
 private struct FileRow: View {
     let task: UploadTask
+    @Environment(AppState.self) private var appState
     @State private var hovered = false
     @State private var showCopied = false
+    @State private var isPreparingShare = false
 
     var body: some View {
         HStack(spacing: 12) {
@@ -922,7 +937,10 @@ private struct FileRow: View {
 
             Spacer(minLength: 4)
 
-            statusBadge
+            HStack(spacing: 8) {
+                statusBadge
+                rowMenu
+            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
@@ -932,7 +950,24 @@ private struct FileRow: View {
         )
         .contentShape(Rectangle())
         .onHover { hovered = $0 }
-        .onTapGesture { copyLinkIfAvailable() }
+        .onTapGesture { copyMagicLink() }
+        .contextMenu {
+            Button(action: { Task { await copyMagicLinkWithGeneratedLink() } }) {
+                Label("Copy magic link", systemImage: "link")
+            }
+            Button(action: { Task { await ensureMagicLinkAndOpen() } }) {
+                Label("Download", systemImage: "arrow.down.circle")
+            }
+            Button(action: { Task { await ensureMagicLink() } }) {
+                Label("Generate magic link", systemImage: "wand.and.stars")
+            }
+            Divider()
+            Button(role: .destructive, action: {
+                appState.deleteHistoryTask(task)
+            }) {
+                Label("Delete", systemImage: "trash")
+            }
+        }
     }
 
     private var metaLine: String {
@@ -1040,7 +1075,7 @@ private struct FileRow: View {
             Text("Copied!")
                 .font(.system(size: 10, weight: .semibold))
                 .foregroundStyle(Color.krevoGreen)
-        } else if task.shareURL != nil && hovered {
+        } else if isCompletedHistoryRow && task.shareURL != nil && hovered {
             Image(systemName: "link")
                 .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(Color.krevoAccentInk)
@@ -1056,15 +1091,101 @@ private struct FileRow: View {
         }
     }
 
-    private func copyLinkIfAvailable() {
-        guard let url = task.shareURL else { return }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(url, forType: .string)
+    private var isCompletedHistoryRow: Bool {
+        if case .completed = task.state { return true }
+        return false
+    }
+
+    private var rowMenu: some View {
+        Menu {
+            Button(action: { Task { await copyMagicLinkWithGeneratedLink() } }) {
+                Label("Copy magic link", systemImage: "link")
+            }
+            Button(action: { Task { await ensureMagicLinkAndOpen() } }) {
+                Label("Download", systemImage: "arrow.down.circle")
+            }
+            Button(action: { Task { await ensureMagicLink() } }) {
+                Label("Generate magic link", systemImage: "wand.and.stars")
+            }
+            Button(role: .destructive, action: {
+                appState.deleteHistoryTask(task)
+            }) {
+                Label("Delete", systemImage: "trash")
+            }
+        } label: {
+            if isPreparingShare {
+                ProgressView()
+                    .controlSize(.mini)
+            } else {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(hovered ? Color.krevoSecondary : Color.krevoTertiary)
+                    .frame(width: 20, height: 20)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(hovered ? Color.white : Color.clear)
+                    )
+            }
+        }
+        .buttonStyle(.plain)
+        .help("More actions")
+    }
+
+    private func copyMagicLink() {
+        Task { await copyMagicLinkWithGeneratedLink() }
+    }
+
+    private func copyMagicLinkWithGeneratedLink() async {
+        await withMagicLink(showCopyFeedback: true) { shareURL in
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(shareURL, forType: .string)
+        }
+    }
+
+    private func ensureMagicLinkAndOpen() async {
+        await withMagicLink(showCopyFeedback: false) { shareURL in
+            if let url = URL(string: shareURL) {
+                NSWorkspace.shared.open(url)
+            }
+        }
+    }
+
+    private func ensureMagicLink() async {
+        await withMagicLink(showCopyFeedback: false) { _ in }
+    }
+
+    private func withMagicLink(
+        showCopyFeedback: Bool,
+        _ action: @escaping @MainActor (String) -> Void
+    ) async {
+        await MainActor.run {
+            isPreparingShare = true
+        }
+        defer {
+            Task { @MainActor in isPreparingShare = false }
+        }
+
+        guard let link = await requestShareURL() else { return }
+        await MainActor.run {
+            action(link)
+        }
+        if showCopyFeedback {
+            showCopiedFeedback()
+        }
+    }
+
+    @MainActor
+    private func showCopiedFeedback() {
         showCopied = true
         Task {
             try? await Task.sleep(for: .seconds(1.4))
             showCopied = false
         }
+    }
+
+    private func requestShareURL() async -> String? {
+        guard isCompletedHistoryRow else { return nil }
+        return await appState.requestShareURL(for: task)
     }
 }
 

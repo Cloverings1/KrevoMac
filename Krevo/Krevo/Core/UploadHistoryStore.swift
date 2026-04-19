@@ -106,6 +106,24 @@ actor UploadHistoryStore {
         write(entries)
     }
 
+    func updateShareURL(id: UUID, shareURL: String) {
+        var entries = load()
+        guard let index = entries.firstIndex(where: { $0.id == id }) else { return }
+
+        let existing = entries[index]
+        entries[index] = HistoryEntry(
+            id: existing.id,
+            fileName: existing.fileName,
+            fileSize: existing.fileSize,
+            shareURL: shareURL,
+            completionTime: existing.completionTime,
+            fileId: existing.fileId,
+            result: existing.result,
+            message: existing.message
+        )
+        write(entries)
+    }
+
     /// Remove all persisted history (called on sign-out).
     func clear() {
         try? FileManager.default.removeItem(at: fileURL)

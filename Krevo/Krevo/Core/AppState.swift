@@ -564,6 +564,38 @@ final class AppState {
         }
     }
 
+    func deleteHistoryTask(_ task: UploadTask) {
+        guard task.state.isTerminal else { return }
+
+        recentCompleted.removeAll { $0.id == task.id }
+        uploadTasks.removeAll { $0.id == task.id && $0.state.isTerminal }
+
+        Task { await historyStore.remove(ids: [task.id]) }
+    }
+
+    func requestShareURL(for task: UploadTask) async -> String? {
+        if let shareURL = task.shareURL, !shareURL.isEmpty {
+            return shareURL
+        }
+
+        guard let fileId = completedFileId(for: task) else { return nil }
+
+        do {
+            let link = try await apiClient.createShareLink(fileId: fileId)
+            task.shareURL = link.url
+            await historyStore.updateShareURL(id: task.id, shareURL: link.url)
+            return link.url
+        } catch {
+            KrevoConstants.uploadLogger.error("Failed to generate share link for \(task.fileName): \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    private func completedFileId(for task: UploadTask) -> String? {
+        guard case .completed(let fileId) = task.state else { return nil }
+        return fileId
+    }
+
     /// Abort all active uploads — used on app termination.
     func abortAllUploads() async {
         let active = activeUploads
