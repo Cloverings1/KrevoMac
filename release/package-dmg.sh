@@ -119,7 +119,7 @@ if [[ "${CODESIGN_IDENTITY}" == "-" ]]; then
     PRESERVED_EXISTING_SIGNATURE=1
   else
     SIGNING_DESCRIPTION="ad-hoc signature"
-    OPEN_INSTRUCTIONS="Internal testing only. On another Mac, Control-click the app, choose Open, then confirm. Do not share this build as a customer release."
+    OPEN_INSTRUCTIONS="That xattr command clears the download quarantine flag — after that, just double-click Krevo.app to launch."
     if [[ -f "${STAGING_APP_PATH}/Contents/embedded.provisionprofile" ]]; then
       rm -f "${STAGING_APP_PATH}/Contents/embedded.provisionprofile"
     fi
@@ -177,6 +177,13 @@ sed \
 xattr -dr com.apple.quarantine "${README_PATH}" 2>/dev/null || true
 
 ln -s /Applications "${STAGING_DIR}/Applications"
+
+INSTALL_SCRIPT_SOURCE="${SCRIPT_DIR}/Install.command"
+if [[ -f "${INSTALL_SCRIPT_SOURCE}" ]]; then
+  cp "${INSTALL_SCRIPT_SOURCE}" "${STAGING_DIR}/Install.command"
+  chmod +x "${STAGING_DIR}/Install.command"
+  xattr -cr "${STAGING_DIR}/Install.command" 2>/dev/null || true
+fi
 
 if [[ -f "${DMG_PATH}" ]]; then
   rm -f "${DMG_PATH}"

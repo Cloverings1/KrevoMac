@@ -3,10 +3,22 @@ Krevo for Mac __VERSION__
 
 This disk image contains a __SIGNING_DESCRIPTION__ build of __APP_NAME__ for Mac.
 
-Install
--------
+Recommended install (easy)
+--------------------------
+1. Double-click Install.command.
+2. When Terminal asks for confirmation, allow it to run.
+3. Krevo will be copied to /Applications and launched automatically.
+
+The installer clears the macOS download "quarantine" flag so Krevo
+opens without a "damaged / cannot be opened" warning. This is only
+needed because this build is not signed with an Apple Developer ID.
+
+Manual install (advanced)
+-------------------------
 1. Drag __APP_NAME__.app into Applications.
-2. __OPEN_INSTRUCTIONS__
+2. Open Terminal and run:
+       xattr -cr /Applications/__APP_NAME__.app
+3. __OPEN_INSTRUCTIONS__
 
 Notes
 -----
